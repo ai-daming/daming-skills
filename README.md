@@ -9,6 +9,8 @@
 | Skill | 说明 |
 |-------|------|
 | [pr-analyze](skills/pr-analyze/) | 对 GitHub PR 进行全面分析，生成结构化中文报告，含数据流追踪、对抗性审查、兼容性评估。 |
+| [challenge](skills/challenge/) | 在规划或实现前挑战问题框架，检验问题是否真实、关键假设是否成立，并寻找更高杠杆的替代方案。 |
+| [grill](skills/grill/) | 用依赖感知的决策树和 frontier 逐轮消除方案中的关键决策歧义。 |
 
 ## 安装
 
@@ -16,15 +18,16 @@
 
 ```bash
 git clone https://github.com/ai-daming/daming-skills.git
-# 复制需要的 skill 到你的 skills 目录（Claude Code 默认 ~/.claude/skills/）
-cp -r daming-skills/skills/pr-analyze ~/.claude/skills/
+# 以 challenge 为例；其他 skill 替换目录名即可
+cp -r daming-skills/skills/challenge ~/.codex/skills/   # Codex
+cp -r daming-skills/skills/challenge ~/.claude/skills/ # Claude Code
 ```
 
 ### 方式二：软链（方便更新）
 
 ```bash
 git clone https://github.com/ai-daming/daming-skills.git ~/work/daming-skills
-ln -s ~/work/daming-skills/skills/pr-analyze ~/.claude/skills/pr-analyze
+ln -s ~/work/daming-skills/skills/challenge ~/.codex/skills/challenge
 ```
 
 ## License
