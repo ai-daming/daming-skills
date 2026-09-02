@@ -1,6 +1,9 @@
 ---
 name: grill
 description: Resolve material decision ambiguity in a coding plan, design, or specification using a dependency-aware decision tree and frontier. Use after the problem framing is accepted and user-owned choices must be settled before execution.
+metadata:
+  author: "大铭 (https://github.com/ai-daming)"
+  copyright: "Copyright © 大铭"
 ---
 
 # Grill
@@ -47,18 +50,36 @@ Ask the currently answerable material decisions in a numbered round. Keep indepe
 
 Every question must include:
 
-1. the decision and why it matters;
-2. viable options and meaningful trade-offs;
-3. the agent's recommended answer and rationale;
-4. any consequence that the recommendation unlocks or rules out.
+1. the background: what is being changed and what is currently undefined;
+2. a plain-language definition of every necessary project or technical term;
+3. one concrete example whenever the choice affects stored data, migration, concurrency, rollback, evidence, compatibility, or user-visible behavior;
+4. viable options and their observable consequences;
+5. the agent's recommended answer and rationale;
+6. one final sentence saying exactly what the user needs to decide.
+
+Do not begin with compressed codes such as `D1`, `AC4`, `source/target`, `preview hash`, or a table name. A label may be retained for the ledger only after a descriptive title. Put code symbols, table names, field names, and contract references in a final **Technical mapping** line; they support the explanation but do not replace it.
+
+If a smart engineer unfamiliar with the repository could not answer the question without asking “这些词是什么意思、前因后果是什么,” the question is not ready to ask. Rewrite it first. When several questions introduce different unfamiliar concepts, prefer one or a small coherent batch rather than a dense four-item dump.
 
 Use this compact form:
 
 ```markdown
-### Q1 — <decision>
-<context and options>
+### Q1 — <plain-language decision>
+
+**背景：** <what is happening now and why this decision appears>
+
+**举例：** <a concrete before/after scenario; omit only when the consequence is already self-evident>
+
+**选项：**
+
+- A: <observable consequence>
+- B: <observable consequence>
 
 **Recommendation:** <answer and reason>
+
+**你现在只需要决定：** <one direct question>
+
+**Technical mapping:** <optional symbols, tables, fields, issue/AC references>
 ```
 
 Wait for user-owned decisions before treating them as settled. Record accepted answers in a decision ledger, including any condition or deferred branch.
@@ -104,3 +125,27 @@ Do not implement until the user separately authorizes execution or the original 
 - Declaring success because the frontier is temporarily blocked
 - Endless interviewing after all material in-scope decisions are settled
 - Quietly beginning implementation at the end of the session
+- Asking with unexplained internal shorthand and expecting the user to reconstruct repository context
+- Listing table/field names as if they explain the business consequence
+
+## Calibration example
+
+Bad:
+
+> D4: `business_profiles` 是否迁移？不迁则 #62 scan 残留。
+
+Good:
+
+> ### Q4 — 合并客户时，差旅配置要不要一起搬过去？
+>
+> **背景：** 系统准备把客户 B 合并到客户 A。客户 B 还有一份独立的差旅配置；当前设计只说了联系人等四类资料怎么迁移，没有说这份配置怎么办。
+>
+> **举例：** 如果不搬，合并后差旅配置仍指向已经被合并掉的客户 B。后续清理程序会认为“还有资料没迁完”，也可能让客户 A 看不到原来的差旅规则。
+>
+> **选项：** A. 一起迁移，并规定 A/B 都有配置时保留哪份；B. 明确不迁移，并让残留检查排除它。
+>
+> **Recommendation:** 选择 A，因为它符合“客户合并后资料仍可用”的直觉；同时需要定义冲突规则。
+>
+> **你现在只需要决定：** 差旅配置是否随客户一起迁移？如果两边都有配置，保留 A、保留 B，还是阻止合并？
+>
+> **Technical mapping:** `business_profiles`；source = 被合并的客户 B，target = 保留的客户 A。

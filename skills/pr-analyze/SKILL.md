@@ -1,523 +1,323 @@
 ---
 name: pr-analyze
-version: 0.6.0
-author: 大铭 (https://github.com/yinwm)
-description: |
-  Comprehensive PR analysis workflow for GitHub repositories. Use when user provides a PR number or URL and asks for analysis.
-  Automatically checks PR purpose, compatibility impact, duplicate PRs, related PRs, CI status, and runs code review.
-  Outputs a structured report in Chinese with actionable suggestions. Reports are saved to a configurable directory.
-
-  TRIGGERS:
-  - "帮我分析 PR #xxx" or "分析这个 PR"
-  - "PR 分析" or "analyze PR"
-  - "审查这个 PR" (审查时自动包含分析)
-  - "查看 PR 兼容性影响"
-  - "这个 PR 干什么的"
-  - User provides a GitHub PR URL
-
-  Use this skill proactively when user mentions a PR and wants to understand its scope and impact.
-
-  CONFIGURATION:
-  - "设置 PR 报告存储路径" or "修改 PR 报告存储目录" - Change report storage directory
-  - First run will prompt for storage directory if not configured
-compatibility: Requires `gh` CLI (GitHub CLI)
+description: Analyze or review a GitHub pull request from a PR number, URL, or owner/repo#number. Also use when the user says review again, re-review, 重新 review, 再 review, or equivalent for the current PR. Produce an evidence-bound Chinese report covering exact base/head SHAs, prior-finding closure, invariants, CI and merge gates, code findings, scope drift, and safe next actions.
+metadata:
+  version: "0.12.0"
+  author: "大铭 (https://github.com/ai-daming)"
+  copyright: "Copyright © 大铭"
+  compatibility: "Requires authenticated GitHub CLI (gh) and Git; matching local worktree preferred, isolated clone fallback."
 ---
 
-# PR 分析
+# PR Analyze
 
-对 GitHub PR 进行全面分析，生成结构化中文报告，并保存到本地。
+Analyze the current PR facts and the exact reviewed code, then produce a structured Chinese report. Keep discovery and reporting read-only with respect to GitHub. Saving the local report and preparing isolated source are expected local side effects; GitHub review, comment, approval, or merge actions require explicit authorization.
 
-## 配置管理
+## Inputs
 
-### 配置文件位置
+Accept:
 
-```
-~/.claude/skills/pr-analyze/config.json
-```
+- PR number, when the repository can be resolved from the current git remote
+- PR URL
+- `owner/repo#number`
+- a continuation such as `重新 review`, `再 review`, `review again`, or `re-review` when the current PR is unambiguous from the conversation or active task context
 
-### 配置结构
+If repository resolution is ambiguous, ask for the repository instead of guessing.
+
+Every review request is a fresh invocation of this skill. A continuation does not authorize an ad-hoc continuation of the previous analysis: reload this `SKILL.md`, refresh the live PR and exact head, reread the references required by the resulting mode, and execute `re-review` from its first gate. Reuse prior reports and reproductions as history, never as current-head evidence.
+
+## Configuration and output
+
+Use `config.json` adjacent to this `SKILL.md`; do not hardcode an engine-specific skills directory. It contains:
 
 ```json
 {
-  "report_dir": "/path/to/your/pr-reports"
+  "report_dir": "/absolute/path/to/pr-reports"
 }
 ```
 
-### 检查与初始化配置
+Before analysis, validate that `report_dir` is usable. If it is absent, ask the user to choose a persistent report directory, create it only after that choice, and save the configuration beside this file.
 
-**每次运行时最先执行（Step 0）：**
+Save reports as:
+
+```text
+{report_dir}/{owner}-{repo}/pr-{number}-{YYYYMMDD}-{HHMMSS}.md
+```
+
+## Required workflow
+
+### 1. Resolve and freeze the review baseline
+
+Confirm `gh` authentication and resolve `owner/repo`. Fetch live metadata including at least:
 
 ```bash
-cat ~/.claude/skills/pr-analyze/config.json 2>/dev/null || echo "NOT_FOUND"
+gh pr view "$PR" --repo "$OWNER_REPO" --json \
+  number,url,title,body,state,isDraft,author,baseRefName,baseRefOid,\
+  headRefName,headRefOid,isCrossRepository,files,additions,deletions,\
+  commits,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,\
+  closingIssuesReferences
 ```
 
-**首次运行流程：**
+Record `baseRefOid` and `headRefOid` as the review baseline. Names alone are not a baseline. If the PR head changes during analysis, do not mix evidence from different heads: refresh metadata, source, comments, reviews, and CI, then restart the final assessment against the new head.
 
-1. 检查 `config.json` 是否存在
-2. 如果不存在，使用 `AskUserQuestion` 询问用户：
-   ```
-   问题：PR 分析报告需要保存到本地，请选择存储目录：
+Treat these gates explicitly:
 
-   A) 使用默认目录：~/pr-reports
-   B) 使用当前项目目录：./pr-reports
-   C) 自定义路径（请输入完整路径）
-   ```
-3. 创建目录（如果不存在）
-4. 写入配置文件
+- `CONFLICTING` or `DIRTY`: merge blocked
+- draft: not ready for approval or merge
+- `BLOCKED`, `UNSTABLE`, pending, failed, cancelled, or missing required checks: not green
+- `UNKNOWN`: unresolved, not equivalent to clean
 
-**修改配置流程：**
+Fetch metadata, diff, and independent read-only API facts in parallel where practical, but keep failures visible with the failed action and original error.
 
-当用户说"修改 PR 报告存储目录"或"设置 PR 报告存储路径"时：
-1. 显示当前配置
-2. 使用 `AskUserQuestion` 询问新路径
-3. 更新 `config.json`
+### 2. Read requirements, existing review, and related work
 
-## 报告文件命名
+Read:
 
-```
-{report_dir}/{repo_slug}/pr-{number}-{YYYYMMDD}-{HHMMSS}.md
-```
+- PR body, commits, and closing issues
+- repository instructions such as `AGENTS.md`, `CLAUDE.md`, architecture documents, accepted ADRs, and linked requirements relevant to the change
+- inline review comments
+- submitted reviews
+- PR conversation comments
 
-示例：
-```
-~/pr-reports/sipeed-picoclaw/pr-1900-20260323-071500.md
-```
+Before treating an implementation PR as architecture-ready, look for the repository's accepted design baseline and any `VerifiedDesignReceipt`. When the PR creates or changes fact ownership, lifecycle, atomicity, concurrency, persistence, recovery, or a cross-module/service boundary, invoke the installed `$impl-gate` in verification mode. The gate must trace both algorithms and data structures; an ADR title, receipt shape, green CI, or author claim is not sufficient by itself.
 
-**命名规则：**
-- `{repo_slug}`: owner/repo 转换为 owner-repo（避免路径中的斜杠）
-- `{number}`: PR 编号
-- `{YYYYMMDD}-{HHMMSS}`: 分析时间戳，支持多次分析同一 PR
+- `READY`: record the exact architecture source, acceptance evidence, covered scope, and receipt validity at the reviewed baseline.
+- `DESIGN_REQUIRED`: do not invent the missing architecture inside the review. Require a design-only maintainer confirmation round before further implementation.
+- `AWAITING_ACCEPTANCE`: treat the candidate as design-complete but not yet authoritative; request maintainer design review rather than another redesign or implementation round.
+- `NEEDS_EVIDENCE`, `NEEDS_DECISION`, or `REFRAME`: preserve that unresolved state and route to the named gate.
 
-## 输入
+Do not demand a new design artifact merely because a PR is large. If the Accepted architecture already decides the changed behavior and boundaries, cite it and continue.
 
-接受以下形式：
-- PR 编号：`1900`（需要当前目录在 git 仓库中）
-- PR URL：`https://github.com/owner/repo/pull/1900`
-- 简写：`owner/repo#1900`
-
-## 分析流程
-
-### Step 0: 检查配置
-
-**在开始任何分析之前执行。** 检查配置文件是否存在，不存在则引导用户配置。
-
-### Step 1: 获取 PR 元数据 + diff + CI
+Use the GitHub APIs when available:
 
 ```bash
-gh pr view <PR> --repo <owner/repo> --json title,body,state,author,baseRefName,headRefName,files,additions,deletions,commits,number,mergeable,mergeStateStatus
-gh pr diff <PR> --repo <owner/repo>
-gh pr checks <PR> --repo <owner/repo> || gh pr view <PR> --repo <owner/repo> --json statusCheckRollup
+gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/comments" --paginate
+gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/reviews" --paginate
+gh api "repos/$OWNER_REPO/issues/$PR_NUMBER/comments" --paginate
 ```
 
-将基本信息获取、diff 和 CI 检查合并为一次并行调用，减少轮次。
+Search for related or possibly duplicate PRs using linked-issue cross-references, explicit PR references, distinctive title/body terms, overlapping intent, and relevant open/merged PRs. Record the search inputs and call the result “possible duplicate” unless the evidence proves equivalence. On re-review, a prior related-work search may be reused only when the Issue links, PR title/body, declared scope, and relevant branch population have not changed; record that live check instead of repeating a broad search. Do not keep a “重复 PR / 关联分析” report section without either a current search or a justified current reuse check.
 
-提取：
-- 标题、描述、状态（OPEN/MERGED/CLOSED）
-- 作者、目标分支、源分支
-- 改动文件列表、增删行数
-- 关联的 Issue（从 body 中提取 `Closes #xxx` 等）
-- **Merge 状态**：
-  - `mergeable`: `MERGEABLE` / `CONFLICTING` / `UNKNOWN`
-  - `mergeStateStatus`: `CLEAN` / `DIRTY` / `BLOCKED` / `DRAFT` / `UNSTABLE`
-- CI 检查结果
+Summarize existing findings by reviewer. Do not clutter the report by restating them as new discoveries, but independently verify material findings and label true independent confirmation.
 
-**重要**: 如果 `mergeable` 为 `CONFLICTING` 或 `mergeStateStatus` 为 `DIRTY`，必须在报告中突出显示这是阻塞性问题！
+Determine the review mode before reading for new findings:
 
-### Step 2: 读取已有评论和 reviews
+- `first-review`: perform the complete review against the frozen PR contract.
+- `re-review`: first build a closure ledger for every prior finding (`finding`, invariant ID, contract anchor, original reproduction, claimed fix commit, current result), rerun the old reproductions, then review the delta since the last reviewed head and every invariant affected by that delta. Keep the full PR in context, but do not reset the scope as if history did not exist.
 
-**目的**：不重复已有发现，识别未覆盖的审查角度。
+For every re-review, perform a mandatory breaker preflight before reviewing new examples:
+
+1. Group prior findings by stable, decidable invariant rather than by round-local labels such as F2 or R7.
+2. Record the invariant's fact owner, authoritative universe or justified equivalence classes, known enforcement points, and violation timeline.
+3. State `NORMAL`, `DESIGN_TRIPPED`, `EVIDENCE_TRIPPED`, or prior `RELEASED` with evidence. Do not leave the breaker decision implicit.
+4. Record scope-audit completeness separately as `NOT_REQUIRED`, `INCOMPLETE`, or `COMPLETE`.
+
+When the PR or a repair changes state, lifecycle, scheduling, concurrency, caching, retry, timeout, shutdown, persistence, migration, reconciliation, or generated evidence, read [references/invariant-audit.md](references/invariant-audit.md) completely and apply the relevant audit artifact. This applies on first review as well as re-review.
+
+On re-review, every newly introduced blocker must say whether it was introduced by the new diff or previously missed, why the prior closure ledger did not cover it, and why it must block the current PR instead of becoming a follow-up. A changed head permits fresh evidence; it does not permit moving the contract or turning a generic preference into a new gate.
+
+During re-review, evaluate whether a repeated invariant failure or a failed closure claim has tripped a circuit breaker. When either is plausible, read [references/circuit-breaker.md](references/circuit-breaker.md) completely and apply it. Keep its two states distinct:
+
+- `DESIGN_TRIPPED`: the same contract-anchored invariant has a second independently reachable violating enforcement point, or a repair leaves another point inside the already frozen scope unresolved.
+- `EVIDENCE_TRIPPED`: a closure claim is not supported by the exact current head, the original reproduction, or the claimed collected validation.
+
+A circuit breaker changes the required repair shape and closure evidence; it does not automatically change finding severity. Freeze the invariant, authoritative universe or equivalence classes, enforcement points, exclusions, and non-goals before prescribing a repair. Do not hardcode repository-specific registries, route names, file layouts, languages, or frameworks into the breaker analysis.
+
+If a breaker is active and its scope audit is `INCOMPLETE`, stop completeness claims. The report may present verified partial findings, but it must not say that findings are exhaustive, that all issues are closed, or that the breaker is released. An incomplete audit forbids `APPROVE` only when the affected invariant is approval-relevant because of a blocking finding, an accepted repository gate, or an unresolved safety/correctness claim. A warning-only breaker is not silently promoted into a merge gate. `RELEASED` records closure of the breaker; it is not by itself an approval prerequisite.
+
+`COMPLETE` is an evidence claim, not a confidence adjective. It is allowed only when the report or a saved report-adjacent artifact contains the row-level finite inventory or equivalence-class matrix, every selected row has a result at the exact head, critical interactions and exclusions are explicit, and the report links to that artifact. A summary such as “all exits checked” or a three-row category table is still `INCOMPLETE`.
+
+### 3. Prepare exact source context
+
+Prefer a detached worktree when a local repository already exists and its normalized remote identity matches `OWNER_REPO`. A similarly named directory or unmatched remote is not sufficient.
+
+Use a task-specific temporary variable:
 
 ```bash
-# Review comments（行内代码评论）
-gh api repos/{owner}/{repo}/pulls/{number}/comments
-
-# Reviews（整体 review）
-gh api repos/{owner}/{repo}/pulls/{number}/reviews
-
-# Issue comments（PR 主体评论）
-gh api repos/{owner}/{repo}/issues/{number}/comments
+PR_ANALYZE_DIR=$(mktemp -d "/tmp/pr-analyze-${PR_NUMBER}-XXXXXXXX")
 ```
 
-**处理**：
-1. 按评论者分组，提取关键发现
-2. 标记已发现的问题（主审查不重复）
-3. 识别未覆盖的角度（补充审查重点）
-4. 记入报告"已有 Review"章节
-
-**如果 API 返回空列表或失败**：跳过此步骤，不影响后续流程。
-
-### Step 3: Clone PR 到临时目录
-
-**目的**：获得完整源码，使数据流追踪和跨文件分析成为可能。
+For a matching local repository:
 
 ```bash
-# 创建临时目录（含 PR 编号，方便识别）
-TMPDIR=$(mktemp -d "/tmp/pr-analyze-${PR_NUMBER}-XXXXXXXX")
+git -C "$LOCAL_REPO" fetch --no-tags origin \
+  "refs/heads/$BASE_REF" \
+  "refs/pull/$PR_NUMBER/head"
 
-# 浅克隆仓库
-git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMPDIR/repo"
-
-# Fetch PR head ref 并 checkout
-cd "$TMPDIR/repo"
-git fetch origin "refs/pull/${PR_NUMBER}/head:pr-${PR_NUMBER}"
-git checkout "pr-${PR_NUMBER}"
+git -C "$LOCAL_REPO" cat-file -e "${BASE_OID}^{commit}"
+git -C "$LOCAL_REPO" cat-file -e "${HEAD_OID}^{commit}"
+git -C "$LOCAL_REPO" worktree add --detach "$PR_ANALYZE_DIR/repo" "$HEAD_OID"
 ```
 
-**后续所有代码审查步骤（Step 4）基于此目录的完整源码进行。**
-
-**如果 clone 失败**（私有仓库权限、网络问题等）：回退到仅基于 diff 的审查模式，并在报告中注明"源码获取失败，审查基于 diff only"。
-
-### Step 4: 代码审查
-
-**读取 `~/.claude/skills/pr-analyze/checklist.md`。如果文件不存在，停止并报错。**
-
-#### Step 4a: 数据流追踪
-
-**这是最关键的新增步骤。** 从 diff 中识别数据表示变换点，用完整源码追踪每个变换的 roundtrip。
-
-**通用步骤**：
-
-1. **从 diff 中识别变换函数** — 找所有做格式转换的函数/方法（输入一种类型，输出另一种类型）
-2. **从 diff 中识别存储操作** — 找所有写入持久化的地方（数据库、文件、缓存）
-3. **用完整源码追踪完整路径** — 对每个变换点，从写入端追踪到存储层，再从存储层追踪到读出端
-4. **验证 roundtrip 一致性** — 写入时存储了什么，读出时是否完整还原
-
-**检查项**：
-- 数据经变换后是否丢失字段？
-- 存储操作是否静默丢弃部分输入？
-- 读出时是否假设了写入时没有保证的不变量？
-- 并发读写时数据是否一致？
-
-#### Step 4b: Pass 1 — CRITICAL
-
-按 checklist.md 中的 CRITICAL 类别逐项检查：
-
-- 数据安全（注入、原子性、N+1）
-- 并发安全（竞态、原子操作）
-- 信任边界（外部输入验证、SSRF、XSS）
-- 命令/代码注入
-- 数据完整性（枚举值覆盖）
-
-**数据完整性检查必须读取 diff 之外的代码**：当 diff 引入新的枚举值/状态/类型常量时，用 Grep 搜索所有引用同类值的位置，用 Read 逐一检查新值是否被处理。
-
-#### Step 4c: Pass 2 — INFORMATIONAL
-
-按 checklist.md 中的 INFORMATIONAL 类别逐项检查：
-
-- 可维护性（文件长度、职责分离）
-- 错误处理（静默吞错、终止条件）
-- 性能（批量操作、内存泄漏）
-- 兼容性（接口签名、配置默认值）
-- 测试（覆盖度、边界条件）
-- 范围漂移（实际改动 vs 声明意图）
-
-#### Step 4d: 对抗性审查（独立子 agent）
-
-**目的**：独立视角找主审查者盲区。
-
-通过 Agent tool 启动一个独立子 agent（`subagent_type: "general-purpose"`），子 agent 没有主审查的上下文。
-
-**子 agent prompt**：
-
-```
-你是一个对抗性代码审查员。对以下 PR 进行独立审查。
-
-PR diff 获取方式：cd {临时目录} && git diff {base_branch}...HEAD
-完整源码位置：{临时目录}
-
-你的任务是找到主审查者可能遗漏的问题。以攻击者和混沌工程师的视角审查。
-
-重点检查：
-- 边界条件和异常路径
-- 跨文件的数据一致性问题（特别是数据经过转换、存储、再读出的完整路径）
-- 错误处理中被吞掉的失败
-- 并发场景下的竞态条件
-- 资源泄漏
-
-对每个发现，输出：
-[SEVERITY] (confidence: N/10) path/to/file:line — 描述
-
-severity: CRITICAL / WARNING / INFORMATIONAL
-confidence: 1-10
-
-不要给出赞美或"看起来不错"的评论。只报告问题。如果没有发现，输出 "NO FINDINGS"。
-```
-
-**合并规则**：
-- 去重：如果子 agent 的发现与主审查重复，保留置信度更高的那个，标注"独立确认"
-- 去重后合并到主报告
-
-**如果子 agent 失败或超时**：跳过此步骤，注明"对抗性审查不可用"。
-
-### Step 5: 兼容性 + 范围漂移
-
-#### 兼容性影响分析
-
-| 维度 | 检查项 |
-|------|--------|
-| **前端** | UI 组件、样式、路由变化 |
-| **API** | 接口签名、请求/响应格式变化 |
-| **依赖** | 包管理文件变化 |
-| **数据库** | Schema 迁移、数据结构变化 |
-| **配置** | 环境变量、配置文件变化 |
-
-#### 范围漂移检测
-
-1. 从 PR 描述、commit message 中提取"声明的意图"
-2. 对比 diff 实际改动与声明意图
-3. 检测：
-   - **范围蔓延**：改动超出了声明意图
-   - **需求缺失**：声明了但没实现的部分
-
-输出：
-```
-范围检查: [CLEAN / DRIFT / MISSING]
-意图: {1 行声明意图}
-交付: {1 行实际改动}
-[如有 drift: 列出超范围改动]
-[如有 missing: 列出未实现需求]
-```
-
-### Step 6: 生成报告
-
-**1. 准备目录和文件名：**
-```bash
-REPO_SLUG=$(echo "$OWNER/$REPO" | tr '/' '-')
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-REPORT_FILE="${REPORT_DIR}/${REPO_SLUG}/pr-${PR_NUMBER}-${TIMESTAMP}.md"
-mkdir -p "$(dirname "$REPORT_FILE")"
-```
-
-**2. 报告模板：**
-
-```markdown
-# PR #{number} 分析报告
-
-> **仓库**: {owner}/{repo}
-> **分支**: {head} → {base}
-> **作者**: {author}
-> **状态**: {state}
-> **分析时间**: {timestamp}
-
----
-
-## TL;DR
-
-- **目的**: {1 句话概括}
-- **风险**: {低/中/高} — {一句话说明}
-- **决策**: {APPROVE / REQUEST CHANGES / COMMENT}
-- **关键关注点**: {0-2 个，无则写"无"}
-
----
-
-## 1. PR 功能说明
-
-{1-2 句话概括 PR 的核心目的}
-
-**关联 Issue**: #{issue_num} - {issue_title}（如有，无则删除此行）
-
----
-
-## 2. 兼容性影响
-
-| 影响维度 | 评估 | 说明 |
-|---------|------|------|
-| 前端 | ✅/⚠️/❌ | ... |
-| API | ✅/⚠️/❌ | ... |
-| 依赖 | ✅/⚠️/❌ | ... |
-| 数据库 | ✅/⚠️/❌ | ... |
-| 配置 | ✅/⚠️/❌ | ... |
-
----
-
-## 3. 重复 PR / 关联分析
-
-### 关联 Issue
-
-{无 / 或列出}
-
-### 关联 PR
-
-| PR | 状态 | 关系 | 说明 |
-|----|------|------|------|
-| #{num} | 状态 | 关系 | ... |
-
-（无关联 PR 则写"无"）
-
----
-
-## 4. Merge 状态
-
-{✅ 无冲突 / ⛔ 有冲突 / ⚠️ 状态异常}
-
----
-
-## 5. CI 状态
-
-{✅ 通过 / ❌ 失败}
-
----
-
-## 6. 已有 Review
-
-{列出已有评论中的关键发现，标注评论者。如无则写"无已有评论"。}
-
----
-
-## 7. 代码审查
-
-### 数据流追踪
-
-{列出追踪到的数据变换点和 roundtrip 验证结果。如发现数据丢失/不一致，标注为 CRITICAL。}
-
-### 主审查发现
-
-- **阻塞问题（CRITICAL）**: N 个
-- **警告（WARNING）**: N 个
-- **建议改进（INFORMATIONAL）**: M 个
-
-{逐条列出，每条格式：}
-[CRITICAL] (confidence: 8/10) path/to/file:line — 描述
-  影响: ...
-  建议: ...
-
-### 对抗性审查
-
-{独立子 agent 的发现，或"对抗性审查不可用"}
-
-### 范围检查
-
-```
-范围检查: CLEAN / DRIFT / MISSING
-意图: ...
-交付: ...
-```
-
----
-
-## 8. 总结
-
-### 最终评估
-
-{对 PR 的整体评价，是否建议合并}
-
-### 需作者修复（blocking）
-
-{无 / 或列出}
-
-### 建议改进（non-blocking）
-
-{无 / 或列出}
-
----
-
-## 9. Review 操作建议
-
-### 推荐操作
-
-{APPROVE / REQUEST CHANGES / COMMENT}
-
-### 可直接使用的 Review 评论
-
-{生成一段完整的 review 评论文本，reviewer 可以直接复制粘贴到 GitHub PR review 中。根据 PR 作者语言选择英文或中文。}
-
-### 可执行的 gh 命令
+For no matching local repository, fall back to an isolated authenticated clone, then fetch and detach at the exact head:
 
 ```bash
-# Request changes
-gh pr review {number} --repo {owner}/{repo} --request-changes --body "..."
-
-# Approve
-gh pr review {number} --repo {owner}/{repo} --approve --body "..."
-
-# 仅评论
-gh pr comment {number} --repo {owner}/{repo} --body "..."
+gh repo clone "$OWNER_REPO" "$PR_ANALYZE_DIR/repo" -- --filter=blob:none --no-checkout
+git -C "$PR_ANALYZE_DIR/repo" fetch --no-tags origin \
+  "refs/heads/$BASE_REF" \
+  "refs/pull/$PR_NUMBER/head"
+git -C "$PR_ANALYZE_DIR/repo" checkout --detach "$HEAD_OID"
 ```
 
----
+Verify all of the following before full-source review:
 
-*报告由 [大铭](https://github.com/yinwm) 的 `/pr-analyze` 生成 (v0.6.0)*
+```bash
+git -C "$PR_ANALYZE_DIR/repo" rev-parse HEAD
+git -C "$PR_ANALYZE_DIR/repo" merge-base "$BASE_OID" "$HEAD_OID"
+git -C "$PR_ANALYZE_DIR/repo" diff --check "$BASE_OID...$HEAD_OID"
 ```
 
-**4. 保存报告到文件。**
+- `HEAD` equals the recorded `headRefOid`
+- both exact commits exist
+- a merge base exists
 
-**5. 输出报告到终端（完整内容，不是文件路径）。**
+If a shallow local repository lacks history, deepen incrementally and recheck. Do not silently substitute the latest base branch tip for the recorded base OID. If exact source acquisition fails, continue only in diff-only mode, include the raw failure, and lower confidence for cross-file conclusions.
 
-**6. 输出确认：**
+Do not modify, stash, rebase, reset, or discard changes in the user's existing checkout. Do not execute code from an untrusted PR by default.
+
+### 4. Review the code
+
+Read [references/checklist.md](references/checklist.md) completely before reviewing. Apply repository-specific contracts before generic preferences.
+
+Perform these passes:
+
+1. Data-flow and roundtrip tracing
+2. Correctness, safety, state, and concurrency invariants
+3. Implementation completeness and architecture fit
+4. Compatibility, migration, tests, operations, and scope drift
+5. Adversarial second pass for boundary conditions and failure paths
+
+For a stateful or evidence-sensitive change, pass 2 or pass 5 is incomplete until the selected artifacts from `invariant-audit.md` account for the affected states, transitions, producers, consumers, terminal exits, and validation oracle. Finding a few adversarial examples is not a substitute for that coverage map.
+
+The architecture-fit pass must report the `$impl-gate` verdict when it was required, including whether the design receipt matches the Issue, baseline, scope, accepted artifact, and current material decisions. A stale or self-accepted receipt is not a pass.
+
+By default, perform pass 5 locally and label it “本地对抗性复查”. It is not independent. Spawn an independent reviewer only when the user explicitly asks for delegation, sub-agents, or parallel review. De-duplicate its findings and label independent confirmation only when it truly came from independent context.
+
+Every reported finding must include severity, confidence, exact path and line at the reviewed head, contract anchor, current-head evidence or reproduction, impact, minimal closure condition, and explicit non-goal. A recommendation may suggest an implementation, but unless an accepted repository design already requires it, do not turn that recommendation into the only authorized architecture. Separate:
+
+- observed repository or GitHub fact
+- inference supported by that fact
+- recommendation or product judgment
+
+### Human-readable review contract
+
+The review is written for a technically capable reader who may not know the repository's private vocabulary. Technical precision is required, but compressed internal notation is not an explanation.
+
+For the overall verdict and every finding:
+
+1. Start with **人话结论**: describe the observable problem in ordinary language before file names, state-machine terms, or contract codes.
+2. Add **举例** whenever the issue involves data migration, concurrency, caching, scheduling, retry, evidence, rollback, compatibility, or an indirect failure path. Prefer a concrete before/after or two-request scenario.
+3. Define every necessary term on first use. Write `source（被合并掉的记录）`, `target（最终保留的记录）`, `AC4（第 4 条验收标准）`, and `preview hash（用于证明预览内容没有变化的指纹）`. Do not assume labels such as D1, F2, L3, or circuit-breaker states explain themselves.
+4. Put exact symbols, paths, line numbers, SHAs, status codes, and contract anchors under **Technical evidence** after the plain explanation.
+5. End with **怎么才算修好** in observable behavior, plus a non-goal. Do not require the user to infer the requested outcome from implementation jargon.
+
+For a re-review closure ledger, explain each non-obvious state once in plain language. For example, `EVIDENCE_TRIPPED（作者说已修，但当前代码或复现不支持）`. Codes may remain for traceability after the explanation.
+
+Reader check: after one pass, someone unfamiliar with the codebase must be able to answer “什么场景会出错、用户或系统会看到什么、为什么现在阻塞、修好后行为有什么不同.” If not, rewrite before producing the report or GitHub comment.
+
+Do not infer severity merely from the checklist section containing an item. A performance issue such as N+1 is CRITICAL only when demonstrated impact satisfies the CRITICAL definition.
+
+Apply an Occam gate to every requested new concept (type, protocol field, table, generator, canary, primitive, or layer). Before requiring it, name the acceptance criterion it closes, the production consumer that reads its value, the final-behavior difference if it is removed, and why an existing mechanism cannot express the invariant. If any answer is missing, prefer reuse or deletion. Occam is a tie-breaker between sufficient fixes, not an independent blocker and not a line-count contest.
+
+The visible review identity is always `**身份：Review Agent**`. Use `LGTM` only when the exact current head qualifies for APPROVE: no blocking finding, non-draft, green required gates, stable baseline, and completed required verification. Never use `LGTM` for COMMENT, REQUEST CHANGES, WAIT, stale heads, or incomplete gates.
+
+### 5. Validate proportionally and safely
+
+Use current GitHub CI as live evidence. Distinguish passing, failing, pending, skipped, cancelled, absent, and stale checks.
+
+For a trusted repository, run repository-defined read-only validation when the user requests it or when it is clearly part of the requested review scope. Read project instructions first, record exact commands and results, and distinguish PR regressions from failures already present at the base baseline.
+
+Never execute arbitrary build, test, install, or hook code from an untrusted PR without explicit authorization. Absence of local execution must be stated; it is not evidence that tests pass.
+
+When the review creates a reproduction script, fixture, query, or non-trivial command sequence that may be needed in the next re-review, do not leave the only copy under `/tmp`. Save a report-adjacent reproduction package under:
+
+```text
+{report_dir}/{owner}-{repo}/artifacts/pr-{number}-{YYYYMMDD}-{HHMMSS}/
 ```
-✅ 报告已保存到: {report_file_path}
-```
 
-**7. 交互式操作选项：**
+Record the exact head, command, script or request body, SHA-256, exit code, relevant output, and any environment/dirty caveat. The next review still reruns it at the new exact head; the package is durable history, not current evidence. A simple standard repository command needs only a command/result row, not a copied wrapper script.
 
-报告输出后，使用 AskUserQuestion 询问用户下一步操作：
+### 6. Re-read live facts before the verdict
 
-```
-问题：分析完成，接下来要怎么操作？
+Immediately before the final verdict, re-fetch:
 
-A) 直接 approve（我会执行 gh pr approve）
-B) Request changes（我会带上 blocking 问题）
-C) 仅评论（不 approve/request changes）
-D) 只保存报告，不操作
-```
+- current `headRefOid` and `baseRefOid`
+- merge state and draft state
+- CI checks
+- reviews and material comments added during analysis
 
-根据用户选择，直接执行对应的 gh 命令。如果用户选择 A（approve），追问是否同时 merge。
+If the head changed, the previous code review is stale. Restart or clearly stop without issuing an approval verdict. Bind the report to the exact final reviewed SHA.
 
-**注意：不要自动删除临时目录。** 用户可能在后续操作中需要访问克隆的完整源码（如深挖某个文件、跑测试等）。临时目录路径在报告头部已标注，用户自行决定何时清理。
+### 7. Generate the report
 
----
+Read [references/report-template.md](references/report-template.md) and use it as the report contract. Write two layers: a short decision brief that a maintainer can understand in one pass, followed by a technical evidence appendix. State each fact once and reference it later; do not repeat the same finding in TL;DR, breaker tables, scope tables, validation, and final conclusion.
 
-## 配置修改
+The report must include:
 
-当用户请求修改报告存储目录时：
+- visible `Review Agent` identity and review mode (`first-review` or `re-review`)
+- previous reviewed head, current delta, and prior-finding closure ledger for a re-review
+- the invocation trigger (`explicit PR` or contextual `重新 review`/equivalent) and confirmation that live facts were refreshed for this invocation
+- an invariant ledger and scope-audit completeness for a re-review, and for any first review requiring `invariant-audit.md`
+- circuit-breaker state, trigger evidence, frozen scope, and release evidence when a breaker is active or was released
+- exact base/head SHAs and final re-read result
+- source mode: matching-local-worktree, isolated-clone, or diff-only
+- temporary source path and cleanup status
+- requirements and repository contracts consulted
+- implementation-gate verdict, architecture source, and receipt validity when architectural impact exists
+- related/possible duplicate search evidence
+- merge and CI gates
+- existing review summary
+- compatibility and scope assessment
+- findings with severity, confidence, contract anchor, reproduction, minimal closure condition, and non-goal
+- the Occam assessment for every requested new concept
+- validation commands and observed failures
+- explicit evidence boundary and recommended action
+- a durable reproduction index when reviewer-created reproductions were used
 
-**触发短语：**
-- "修改 PR 报告存储目录"
-- "设置 PR 报告存储路径"
-- "更改 pr-analyze 配置"
+The report and any prepared GitHub body must preserve the human-readable layer. A comment may omit administrative metadata already available on GitHub, but it must retain for every actionable finding: the plain-language failure, one example, impact, observable closure condition, severity, and exact technical evidence. Do not shorten a finding into only codes and symbols.
 
-**流程：**
-1. 读取当前配置并显示
-2. 使用 `AskUserQuestion` 询问新路径
-3. 更新 `config.json`
-4. 确认修改成功
+Keep `universe`, `oracle`, `reconciliation`, `terminal`, `pacing`, `bucket`, `generation`, and similar internal vocabulary out of the decision brief unless each term is immediately translated into ordinary language. Exact internal names belong in the technical appendix.
 
----
+Reserve words such as “全部关闭”, “一次收齐”, “完整覆盖”, `exhaustive`, and equivalent completeness claims for a `COMPLETE` frozen audit with recorded exclusions and evidence. Otherwise say “在当前已验证范围内” and list the unverified boundary.
 
-## 严重度校准
+Save the full report. In chat, return the substantive decision brief plus the report path; do not paste the technical appendix again unless the user asks. State the completed gate precisely: analysis, code review, local validation, GitHub review submission, approval, and merge are separate outcomes.
 
-### 三级分类
+### 8. GitHub mutation protocol
 
-| 级别 | 标准 | 示例 |
-|------|------|------|
-| CRITICAL | 运行时错误/安全漏洞/数据丢失，正常场景可触发，无安全网 | 格式转换丢失字段导致数据损坏 |
-| WARNING | 异常行为，但存在安全网或影响有限 | token 估算偏低但有 retry 机制 |
-| INFORMATIONAL | 设计偏好、可维护性建议 | 文件过长建议拆分 |
+Analysis does not authorize a GitHub mutation. If the user asks to comment, approve, request changes, or merge:
 
-**判定口诀**：删除这行代码会引发 bug 且无安全网 → CRITICAL。有安全网兜底 → WARNING。"我会选择不同的做法" → INFORMATIONAL。
+1. Refresh the target PR and exact head.
+2. Show the exact action and complete review/comment body.
+3. Obtain explicit authorization for that target and action.
+4. Write the body to a local file and use `--body-file`; never interpolate untrusted or generated review text inside a shell-quoted `--body` argument.
+5. Execute only the authorized action.
+6. Read the resulting GitHub review/comment or merge state back and report its URL, author, state, and head SHA.
 
-### 置信度标注
+Every review/comment body starts with `**身份：Review Agent**`. An authorized APPROVE body includes `LGTM`; other actions must not include it.
 
-每个发现必须附带置信度（1-10），详见 `checklist.md`。
+Approval never implies merge authorization. Merge must be explicitly included in the preview and authorization.
 
-**发现格式**：
-```
-[CRITICAL] (confidence: 8/10) path/to/file:42 — 描述
-  影响: ...
-  建议: ...
-```
+### 9. Temporary source lifecycle
 
----
+Do not automatically delete retained source at the end of analysis. Report the exact directory and whether it is a worktree or clone. When cleanup is authorized:
 
-## 注意事项
+- remove a worktree with `git worktree remove` from its owning repository, then verify `git worktree list`
+- remove a clone only after resolving and validating the exact temporary path; prefer a recoverable trash operation
 
-1. **CI 检查失败时**：输出警告，但不阻止分析继续
-2. **无关联 Issue 时**：在对应位置写"无"，不要展开空段落
-3. **大型 PR 时**：diff 可能很大，重点关注核心文件
-4. **私有仓库**：确保 `gh` 已认证且有访问权限
-5. **报告目录权限**：确保有写入权限，否则提示用户
-6. **同一 PR 多次分析**：使用时间戳区分，不会覆盖
-7. **信息密度优先**：能用一句话说清的不用一段话，能用表格的不用列表
-8. **Clone 失败时**：回退到 diff-only 模式，报告中注明
-9. **不自动删除临时目录**：保留克隆的完整源码供后续操作使用，路径在报告中标注
-10. **已有评论优先**：不重复已有发现，专注于未覆盖的角度
+Never use a broad or unresolved recursive deletion target.
+
+## Severity calibration
+
+- `CRITICAL`: a demonstrated runtime bug, security vulnerability, data loss/corruption path, or correctness failure reachable in a normal scenario without an effective safety net; blocks approval
+- `WARNING`: meaningful abnormal behavior or operational risk with limited impact or an effective safety net; normally should be fixed, but does not automatically block
+- `INFORMATIONAL`: maintainability, clarity, or design improvement; non-blocking
+
+Confidence:
+
+- `9-10`: verified through exact code path, reproduction, or authoritative evidence
+- `7-8`: strong code-path evidence with a small unverified assumption
+- `5-6`: plausible concern requiring verification; label it clearly
+- below `5`: normally omit from main findings unless the potential impact is exceptional
+
+## Failure handling
+
+Do not bury errors. For every skipped or degraded step, preserve the failed action, original error text, impact on confidence, and fallback used. “Unavailable” is a result category, not a substitute for evidence.

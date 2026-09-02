@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implementation Gate"
+  short_description: "Block coding until architecture readiness is proven"
+  default_prompt: "Use $impl-gate to decide whether this work is ready to enter implementation."
