@@ -7,6 +7,19 @@ description: Safely create, update, comment on, classify, relate, and close GitH
 
 Operate GitHub Issues through one governed mutation workflow. GitHub is the authority for Issue content, classification, relationships, Milestone membership, comments, and state. Local tools may normalize these facts but must not redefine them.
 
+## Select the mutation path
+
+Resolve the exact action and target first. Issue mutations use this skill; PR review/comment/approval/merge uses `$pr-analyze` directly, without running both mutation protocols for the same write.
+
+| Mutation | Required depth |
+|---|---|
+| Append history-only COMMENT | Check target identity, relevant current context, exact body, authorization, and readback. Do not migrate the Issue format or audit unrelated design/AC/dependency fields. If the text changes the contract or claims acceptance/completion, use the corresponding deeper path. |
+| Metadata-only change | Check repository semantics for the changed field, its current value, relevant relationships, and downstream impact. A contract-bearing label or Milestone is not automatically metadata-only. |
+| CREATE, contract/framing/design or relationship change | Apply the full contract and impact workflow below. |
+| Acceptance evidence, CLOSE, or REOPEN | Check the affected criteria, lifecycle rules, and evidence; CLOSE requires the completion checks below. Do not infer delivery from a design PR or an agent statement. |
+
+For a simple path, use a compact target/action/body-or-diff/impact/authority record. Keep the same safeguards, but omit inapplicable tables. Reuse repository policy already read when its revision and applicability remain current.
+
 ## Load the Issue contract
 
 Before planning CREATE or UPDATE:
@@ -21,7 +34,7 @@ For ClickVibe, read `docs/issue-contract.md`. Do not hardcode its canonical fing
 
 ## Existing Issue compatibility
 
-Classify the Issue contract status before proposing a mutation:
+For mutations that require contract classification under the selected path, classify the Issue contract status:
 
 ```text
 current | legacy-compatible | unknown | conflicting
@@ -91,15 +104,17 @@ Creating an Issue and then adding a Parent, dependency, label, or comment is a m
 
 1. Resolve the exact GitHub host, `owner/repository`, and Issue number, or confirm that CREATE has no Issue yet. Never rely on the current directory alone when the target is ambiguous.
 2. Before CREATE, search both existing Issues, including closed Issues, and the codebase for duplicate or already delivered work.
-3. Refresh title, body, state, labels or native type, Milestone, assignees, `updatedAt`, URL, Parent/Sub-issues, and direct dependencies.
-4. Load the repository Issue contract and classify the current Issue as `current`, `legacy-compatible`, `unknown`, or `conflicting`.
-5. Parse current and proposed content by evidence role. Preserve unknown values and conflicts between native relationships and body fallbacks. Require a current-contract upgrade in the same preview when a legacy-compatible Issue receives a `contractAffecting` mutation.
+3. Refresh facts required by the selected mutation path. For the full path, include title, body, state, labels or native type, Milestone, assignees, `updatedAt`, URL, Parent/Sub-issues, and direct dependencies. Do not treat a skipped unrelated lookup as an empty fact.
+4. Load the applicable repository policy. For CREATE or body/relationship changes, classify the current Issue as `current`, `legacy-compatible`, `unknown`, or `conflicting`; a history-only comment does not require whole-Issue classification.
+5. Parse the meaning being changed by evidence role. Preserve unknown values and conflicts between native relationships and body fallbacks. Require a current-contract upgrade in the same preview when a legacy-compatible Issue receives a `contractAffecting` mutation; do not force it for history-only or metadata-only actions.
 6. Classify semantic differences and determine which challenge verdict, decision record, implementation-gate receipt, authorization, or Review may be stale.
-7. Show the exact user-visible writes and all downstream consequences: use a semantic body diff for edits and complete rendered Markdown for CREATE or COMMENT.
-8. Require explicit authorization for that exact plan. A discussion conclusion, Agent recommendation, gate verdict, development brief, or prior permission for another mutation is not authorization.
-9. Immediately refresh the target again. If `updatedAt`, body, classification, state, or relevant relationships changed since the preview, stop and regenerate the plan instead of overwriting concurrent work.
+7. Prepare the exact user-visible writes and downstream consequences: use a semantic body diff for edits and complete rendered Markdown for CREATE or COMMENT. Show them before requesting authorization; reference an already presented identical plan rather than displaying it again solely for confirmation.
+8. Check existing explicit authorization for the exact target, action, content, and scope. If that plan was already shown and approved, proceed without another confirmation. Otherwise present the concrete plan and obtain authorization. A discussion conclusion, recommendation, gate verdict, development brief, or permission for a different mutation is not authorization.
+9. Immediately refresh the target again. A changed `updatedAt` triggers a comparison, not automatic loss of authorization. If relevant content, overwritten fields, contract, state, relationships, or impact changed, regenerate the plan and obtain authorization for any materially changed writes or consequences. If only unrelated activity changed and the approved plan remains identical and valid, record why and continue. Never apply an old whole-body replacement over concurrent edits or treat a failed comparison as unchanged. This preflight is not an atomic compare-and-swap; preserve any provider conflict and verify after writing.
 10. Execute only the authorized mutation. Use `gh issue` for supported Issue fields and `gh api` for native relationship operations. Pass multiline bodies through stdin or `--body-file -`; never interpolate untrusted Markdown into a shell command.
 11. Read GitHub again and compare the result with the plan. Report partial application, unresolved invalidation, and original failures explicitly; never claim success from a zero exit code alone.
+
+Authorization must still be in force, not revoked or narrowed. It covers the intended write once, not repeated publication. Before retrying an uncertain mutation, read back whether it already took effect; do not blindly replay it or interpret a failed lookup as absence. If the outcome remains unknown, report it and stop the retry.
 
 ## Body versus comment
 
@@ -107,12 +122,12 @@ Update the body when the current contract or stable framing/design information c
 
 A comment does not redefine the contract. If a comment records an accepted requirement or decision change, propose a separate body update and classify its downstream impact before delivery consumes it.
 
-## Review and completion evidence
+## Review and completion evidence — when the mutation depends on it
 
 - An Agent completion statement, commit creation, or test pass is not completion evidence.
 - A Review verdict binds the exact PR head; a changed head requires another Review.
-- A Review also binds the repository-defined canonical contract fingerprint. This Skill does not decide its fields, normalization, serialization, algorithm, or version.
-- If the repository cannot interpret the current contract schema or canonicalization version, report `unknown` and do not preserve an authorization or Review as current.
+- Where the repository defines a canonical contract fingerprint, a Review also binds it. This Skill does not invent that scheme or require one for repositories that have none.
+- If a required repository contract schema or canonicalization version cannot be interpreted, report `unknown` and do not preserve the dependent authorization or Review as current. Unrelated history-only comments do not acquire that dependency.
 - Close a delivery Issue only after verifying its PR, exact head, independent Review, Acceptance Criteria, required external evidence, and repository closing gates.
 
 ## Hard boundaries

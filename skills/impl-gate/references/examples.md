@@ -8,6 +8,12 @@ Request: Add one optional display field to an existing read model. The Accepted 
 
 Expected result: `READY` after confirming the exact baseline and scope. Cite the existing architecture. Do not demand a new ADR because several files change.
 
+## READY — new HEAD inside the same accepted design
+
+Request: Continue an already authorized implementation after a local commit. The work identity, accepted design, and material decisions are unchanged. Compare exact baselines and verify the diff plus its affected consumers/failure paths still implement that design.
+
+Expected result: delta verification and a new `READY` receipt at the current baseline. Reuse existing design acceptance and scope-specific implementation authority without asking again. The old code review does not approve this HEAD; independent review must reassess it. If the delta instead introduces an uncovered restart or ownership rule, enter full verification and report the actual gap.
+
 ## DESIGN_REQUIRED — goals and data shapes without an algorithm
 
 Request: Reduce GitHub calls across several worktrees. The Issue lists counters, cache records, rate-limit headers, and acceptance tests, but does not decide who owns scheduling, how requests are admitted or merged, what scope shares a budget, what happens on restart, or how uncertain writes are handled.

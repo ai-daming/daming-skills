@@ -36,7 +36,15 @@ If these facts are unavailable, preserve the failed lookup or missing source ins
 
 Record the work identity, exact baseline, requested scope, fixed constraints, and implementation authority. Authorization to design is not authorization to implement.
 
-### 2. Test whether existing architecture is sufficient
+### 2. Select the verification depth
+
+- **Full verification:** no inspectable prior verification exists, or the change introduces an uncovered ownership, lifecycle, algorithm, data structure, compatibility, or recovery boundary. Audit all material parts of the design-readiness contract.
+- **Delta verification:** an accepted, previously verified design and its evidence are available. Compare the prior and current exact baselines, scope, design revisions, and material decisions. Trace changed behavior and its affected producers, consumers, invariants, and failure paths; cite unchanged evidence with a reason it still applies.
+- If that comparison is unavailable or exposes a design gap, investigate or expand to full verification. Diff size alone never selects the mode.
+
+A new HEAD requires reassessment, not automatic redesign or renewed acceptance of unchanged decisions. This is architecture coverage verification, not a substitute for independent code review at the current HEAD.
+
+### 3. Test whether existing architecture is sufficient
 
 Trace the requested change against the accepted architecture. A named L1-L4 scheme may help, but is never required. Inspect the actual architectural impact:
 
@@ -49,9 +57,9 @@ Trace the requested change against the accepted architecture. A named L1-L4 sche
 
 A large diff can remain inside an accepted design. A small change can require design when it changes one of these contracts.
 
-### 3. Verify design completeness
+### 4. Verify design completeness
 
-When the work changes architecture, read [references/design-readiness-contract.md](references/design-readiness-contract.md) completely and audit the candidate design. Do not accept headings or field presence as proof. Follow behavior end to end and verify that every new concept has a production consumer and every critical transition has owned state and failure semantics.
+Use [references/design-readiness-contract.md](references/design-readiness-contract.md) for full verification and for issuing/checking receipts. For delta verification, reuse previously read unchanged rules and trace evidence, and inspect all affected contract sections; if either is unavailable, read the full contract. Audit the candidate design semantically. Do not accept headings or field presence as proof. Follow behavior end to end and verify that every new concept has a production consumer and every critical transition has owned state and failure semantics.
 
 Route unresolved matters precisely:
 
@@ -62,13 +70,15 @@ Route unresolved matters precisely:
 - candidate design complete but not explicitly accepted by the maintainer → `AWAITING_ACCEPTANCE`;
 - accepted design covers the exact scope and baseline → `READY`.
 
-### 4. Issue or verify the receipt
+### 5. Issue or verify the receipt
 
 Only `READY` may produce a `VerifiedDesignReceipt`. Use the schema and validity rules in the reference. A receipt records evidence; it does not make weak design true.
 
 For newly introduced architecture, `READY` requires explicit maintainer acceptance of the referenced design. For work wholly inside an already Accepted baseline, record that baseline as the acceptance source.
 
-A receipt becomes stale when the Issue identity, baseline, implementation scope, accepted design, or a material decision changes. Re-run the gate; do not edit the old receipt into apparent validity.
+A receipt becomes stale for changed work identity, baseline, scope, design, or material decisions. Reassess the delta and issue a new receipt at the current baseline after `READY`; preserve the old receipt as history. A prior receipt is never silently relabeled as current. Unchanged maintainer acceptance remains usable only for the scope and design it actually covers.
+
+Record implementation authority separately. `READY` may be issued without execution authority; when the user already authorized the exact implementation scope, do not ask for the same permission again. A complete newly introduced design still needs explicit acceptance.
 
 ## Output
 
@@ -91,17 +101,21 @@ Example for `DESIGN_REQUIRED`:
 >
 > **下一步：** 先完成并确认这套调度与重启规则，再进入实现。
 
-After that human layer, append the exact receipt:
+Keep the explanation proportional. For a covered change, a short paragraph citing the accepted design and checked delta is sufficient; do not recreate the original design narrative or ask resolved questions. When invoked by another skill, supply one result/evidence record for the caller to reference.
+
+After that human layer, append the gate result:
 
 ```text
 Implementation Gate: READY | DESIGN_REQUIRED | AWAITING_ACCEPTANCE | NEEDS_EVIDENCE | NEEDS_DECISION | REFRAME
 Work: <issue/task identity>
 Baseline: <exact SHA or explicit non-repository baseline>
+Verification: <full / delta; previous baseline and reused evidence when applicable>
 Architecture source: <accepted artifact(s), or missing>
 Algorithm coverage: <complete / gaps>
 Data-structure coverage: <complete / gaps>
 Open material items: <none or list>
-Next action: <one concrete gate>
+Implementation authority: <existing instruction and scope, or not granted>
+Next action: <concrete authorized continuation or missing gate>
 ```
 
 For `READY`, append the receipt. For every other verdict, state the minimum missing evidence, design work, decision, or acceptance action and stop before implementation.

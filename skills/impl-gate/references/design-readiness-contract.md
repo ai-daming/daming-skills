@@ -117,12 +117,14 @@ verdict: READY
 A receipt is valid only while all of these remain true:
 
 1. `work_id` identifies the current work.
-2. `baseline_sha` is the inspected baseline, or the baseline delta has been explicitly reassessed.
+2. `baseline_sha` is the current inspected baseline. On a changed baseline, explicitly reassess the delta before issuing a new receipt; retain the old receipt as historical evidence.
 3. `scope` covers the requested implementation.
 4. Every referenced artifact exists at the cited revision.
 5. The architecture is Accepted for that scope; a draft authored by the Coding Agent is not self-accepting.
 6. Both sides of the algorithm–structure trace are semantically complete.
 7. No material user decision remains open.
-8. Implementation has separate authorization.
+8. Readiness and execution authority remain separate. A `READY` receipt can be valid before implementation is authorized; check existing authority for the exact scope before execution, without requesting it again when already granted.
+
+For delta verification, retain the same receipt schema. In the gate result or linked evidence, record the previous baseline, changed scope/paths, affected algorithm–structure trace, reused evidence and why it still applies, and the current outcome. Reuse of accepted design does not inherit a prior code-review approval. Expand to full verification when this impact trace is unavailable or incomplete.
 
 Structural parsing can check shape, but cannot establish conditions 3–7. Never describe a shape-only check as design verification.

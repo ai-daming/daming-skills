@@ -2,7 +2,7 @@
 name: pr-analyze
 description: Analyze or review a GitHub pull request from a PR number, URL, or owner/repo#number. Also use when the user says review again, re-review, 重新 review, 再 review, or equivalent for the current PR. Produce an evidence-bound Chinese report covering exact base/head SHAs, prior-finding closure, invariants, CI and merge gates, code findings, scope drift, and safe next actions.
 metadata:
-  version: "0.12.0"
+  version: "0.13.0"
   author: "大铭 (https://github.com/ai-daming)"
   copyright: "Copyright © 大铭"
   compatibility: "Requires authenticated GitHub CLI (gh) and Git; matching local worktree preferred, isolated clone fallback."
@@ -23,7 +23,9 @@ Accept:
 
 If repository resolution is ambiguous, ask for the repository instead of guessing.
 
-Every review request is a fresh invocation of this skill. A continuation does not authorize an ad-hoc continuation of the previous analysis: reload this `SKILL.md`, refresh the live PR and exact head, reread the references required by the resulting mode, and execute `re-review` from its first gate. Reuse prior reports and reproductions as history, never as current-head evidence.
+Every review request requires a fresh current-head assessment. Refresh live PR facts and select first-review or re-review; do not carry forward the old verdict. Within the same task, reuse already read skill/reference text when the files are unchanged and that context is still available. Read new or changed references required by the current mode; reread when their content is unavailable. Reloading unchanged instructions is not review evidence.
+
+Reuse prior reports, source inventories, and reproduction scripts as inputs to current verification. Old test results and approvals are historical, not current-head proof. Keep accepted design and user decisions separate from those expiring code-review results.
 
 ## Configuration and output
 
@@ -78,7 +80,9 @@ Read:
 - submitted reviews
 - PR conversation comments
 
-Before treating an implementation PR as architecture-ready, look for the repository's accepted design baseline and any `VerifiedDesignReceipt`. When the PR creates or changes fact ownership, lifecycle, atomicity, concurrency, persistence, recovery, or a cross-module/service boundary, invoke the installed `$impl-gate` in verification mode. The gate must trace both algorithms and data structures; an ADR title, receipt shape, green CI, or author claim is not sufficient by itself.
+Before treating an implementation PR as architecture-ready, inspect its accepted design baseline and any `VerifiedDesignReceipt`. When the PR creates or changes fact ownership, lifecycle, atomicity, concurrency, persistence, recovery, or a cross-module/service boundary, invoke `$impl-gate` for architecture verification. Use delta verification when prior verified design evidence is available and traceable; use full verification for uncovered boundaries or insufficient prior evidence. Both algorithms and data structures must be traced; an ADR title, receipt shape, green CI, or author claim is insufficient.
+
+Reference the gate's result once in the review instead of copying its full report. An unchanged Accepted design does not need acceptance again merely because HEAD changed. The reviewer still independently checks whether current code implements that design.
 
 - `READY`: record the exact architecture source, acceptance evidence, covered scope, and receipt validity at the reviewed baseline.
 - `DESIGN_REQUIRED`: do not invent the missing architecture inside the review. Require a design-only maintainer confirmation round before further implementation.
@@ -111,11 +115,11 @@ For every re-review, perform a mandatory breaker preflight before reviewing new 
 3. State `NORMAL`, `DESIGN_TRIPPED`, `EVIDENCE_TRIPPED`, or prior `RELEASED` with evidence. Do not leave the breaker decision implicit.
 4. Record scope-audit completeness separately as `NOT_REQUIRED`, `INCOMPLETE`, or `COMPLETE`.
 
-When the PR or a repair changes state, lifecycle, scheduling, concurrency, caching, retry, timeout, shutdown, persistence, migration, reconciliation, or generated evidence, read [references/invariant-audit.md](references/invariant-audit.md) completely and apply the relevant audit artifact. This applies on first review as well as re-review.
+When the PR or a repair changes state, lifecycle, scheduling, concurrency, caching, retry, timeout, shutdown, persistence, migration, reconciliation, or generated evidence, use the complete rules in [references/invariant-audit.md](references/invariant-audit.md) and apply the relevant audit artifact. Read them when first needed; reuse unchanged, available rules on re-review. This applies on first review as well as re-review.
 
 On re-review, every newly introduced blocker must say whether it was introduced by the new diff or previously missed, why the prior closure ledger did not cover it, and why it must block the current PR instead of becoming a follow-up. A changed head permits fresh evidence; it does not permit moving the contract or turning a generic preference into a new gate.
 
-During re-review, evaluate whether a repeated invariant failure or a failed closure claim has tripped a circuit breaker. When either is plausible, read [references/circuit-breaker.md](references/circuit-breaker.md) completely and apply it. Keep its two states distinct:
+During re-review, evaluate whether a repeated invariant failure or a failed closure claim has tripped a circuit breaker. When either is plausible, apply the complete rules in [references/circuit-breaker.md](references/circuit-breaker.md); read them when first needed or changed, and reuse them only while unchanged and available. Keep its two states distinct:
 
 - `DESIGN_TRIPPED`: the same contract-anchored invariant has a second independently reachable violating enforcement point, or a repair leaves another point inside the already frozen scope unresolved.
 - `EVIDENCE_TRIPPED`: a closure claim is not supported by the exact current head, the original reproduction, or the claimed collected validation.
@@ -176,7 +180,7 @@ Do not modify, stash, rebase, reset, or discard changes in the user's existing c
 
 ### 4. Review the code
 
-Read [references/checklist.md](references/checklist.md) completely before reviewing. Apply repository-specific contracts before generic preferences.
+Use the complete [references/checklist.md](references/checklist.md), reading it before first use and whenever changed or unavailable. Apply repository-specific contracts before generic preferences. On re-review, map the delta to affected checklist items and expand for shared mechanisms or changed contracts; do not recreate an unchanged checklist as new evidence.
 
 Perform these passes:
 
@@ -200,19 +204,9 @@ Every reported finding must include severity, confidence, exact path and line at
 
 ### Human-readable review contract
 
-The review is written for a technically capable reader who may not know the repository's private vocabulary. Technical precision is required, but compressed internal notation is not an explanation.
+Lead with the observable problem, then the evidence and observable closure condition. Explain a necessary term on first use and give a concrete timeline for an indirect, concurrent, or recovery failure. Do not repeat background already explained in the report. Preserve severity, confidence, contract anchor, exact location, current evidence, impact, minimal closure, and non-goals for each finding; the format can be a paragraph or a table when that is enough.
 
-For the overall verdict and every finding:
-
-1. Start with **人话结论**: describe the observable problem in ordinary language before file names, state-machine terms, or contract codes.
-2. Add **举例** whenever the issue involves data migration, concurrency, caching, scheduling, retry, evidence, rollback, compatibility, or an indirect failure path. Prefer a concrete before/after or two-request scenario.
-3. Define every necessary term on first use. Write `source（被合并掉的记录）`, `target（最终保留的记录）`, `AC4（第 4 条验收标准）`, and `preview hash（用于证明预览内容没有变化的指纹）`. Do not assume labels such as D1, F2, L3, or circuit-breaker states explain themselves.
-4. Put exact symbols, paths, line numbers, SHAs, status codes, and contract anchors under **Technical evidence** after the plain explanation.
-5. End with **怎么才算修好** in observable behavior, plus a non-goal. Do not require the user to infer the requested outcome from implementation jargon.
-
-For a re-review closure ledger, explain each non-obvious state once in plain language. For example, `EVIDENCE_TRIPPED（作者说已修，但当前代码或复现不支持）`. Codes may remain for traceability after the explanation.
-
-Reader check: after one pass, someone unfamiliar with the codebase must be able to answer “什么场景会出错、用户或系统会看到什么、为什么现在阻塞、修好后行为有什么不同.” If not, rewrite before producing the report or GitHub comment.
+Use [references/report-template.md](references/report-template.md) for presentation. Each fact and ledger has one full location; summaries and gate handoffs reference it. A reader should understand what fails, who is affected, why it blocks (if it does), and what behavior closes it without decoding private shorthand.
 
 Do not infer severity merely from the checklist section containing an item. A performance issue such as N+1 is CRITICAL only when demonstrated impact satisfies the CRITICAL definition.
 
@@ -225,6 +219,8 @@ The visible review identity is always `**身份：Review Agent**`. Use `LGTM` on
 Use current GitHub CI as live evidence. Distinguish passing, failing, pending, skipped, cancelled, absent, and stale checks.
 
 For a trusted repository, run repository-defined read-only validation when the user requests it or when it is clearly part of the requested review scope. Read project instructions first, record exact commands and results, and distinguish PR regressions from failures already present at the base baseline.
+
+On re-review, rerun prior reproductions at the exact current HEAD, verify the repair delta and affected invariants, and complete repository-required checks. Reuse current-head CI where it supplies the required evidence. Broaden local tests when changed shared mechanisms, new failures, or unresolved risks justify it; do not repeat an unchanged successful run merely to add another receipt. Required real-storage, concurrency, coverage, and independent-review gates remain in force.
 
 Never execute arbitrary build, test, install, or hook code from an untrusted PR without explicit authorization. Absence of local execution must be stated; it is not evidence that tests pass.
 
@@ -251,31 +247,9 @@ If the head changed, the previous code review is stale. Restart or clearly stop 
 
 Read [references/report-template.md](references/report-template.md) and use it as the report contract. Write two layers: a short decision brief that a maintainer can understand in one pass, followed by a technical evidence appendix. State each fact once and reference it later; do not repeat the same finding in TL;DR, breaker tables, scope tables, validation, and final conclusion.
 
-The report must include:
+Use the template's applicable sections, not an obligatory empty form. Always retain the exact base/head, final live readback, source/evidence boundaries, current findings, validation and next action. On re-review retain the previous HEAD, reviewed delta, closure ledger, invariant/breaker preflight and scope-audit result. Include architecture verification, detailed row-level audits, active/released breaker evidence, reproduction packages and mutation previews when their triggers apply.
 
-- visible `Review Agent` identity and review mode (`first-review` or `re-review`)
-- previous reviewed head, current delta, and prior-finding closure ledger for a re-review
-- the invocation trigger (`explicit PR` or contextual `重新 review`/equivalent) and confirmation that live facts were refreshed for this invocation
-- an invariant ledger and scope-audit completeness for a re-review, and for any first review requiring `invariant-audit.md`
-- circuit-breaker state, trigger evidence, frozen scope, and release evidence when a breaker is active or was released
-- exact base/head SHAs and final re-read result
-- source mode: matching-local-worktree, isolated-clone, or diff-only
-- temporary source path and cleanup status
-- requirements and repository contracts consulted
-- implementation-gate verdict, architecture source, and receipt validity when architectural impact exists
-- related/possible duplicate search evidence
-- merge and CI gates
-- existing review summary
-- compatibility and scope assessment
-- findings with severity, confidence, contract anchor, reproduction, minimal closure condition, and non-goal
-- the Occam assessment for every requested new concept
-- validation commands and observed failures
-- explicit evidence boundary and recommended action
-- a durable reproduction index when reviewer-created reproductions were used
-
-The report and any prepared GitHub body must preserve the human-readable layer. A comment may omit administrative metadata already available on GitHub, but it must retain for every actionable finding: the plain-language failure, one example, impact, observable closure condition, severity, and exact technical evidence. Do not shorten a finding into only codes and symbols.
-
-Keep `universe`, `oracle`, `reconciliation`, `terminal`, `pacing`, `bucket`, `generation`, and similar internal vocabulary out of the decision brief unless each term is immediately translated into ordinary language. Exact internal names belong in the technical appendix.
+A section omitted as irrelevant must not hide an unperformed required check. Distinguish `not applicable` from `not verified`. Keep the human-readable layer in any GitHub body, along with each finding's severity, exact evidence, impact, closure condition and non-goal. Do not turn the decision brief into a second technical appendix.
 
 Reserve words such as “全部关闭”, “一次收齐”, “完整覆盖”, `exhaustive`, and equivalent completeness claims for a `COMPLETE` frozen audit with recorded exclusions and evidence. Otherwise say “在当前已验证范围内” and list the unverified boundary.
 
@@ -286,11 +260,13 @@ Save the full report. In chat, return the substantive decision brief plus the re
 Analysis does not authorize a GitHub mutation. If the user asks to comment, approve, request changes, or merge:
 
 1. Refresh the target PR and exact head.
-2. Show the exact action and complete review/comment body.
-3. Obtain explicit authorization for that target and action.
+2. Prepare the exact action and complete review/comment body. Reuse an already presented identical body; do not render a second full copy solely for ceremony.
+3. Check existing explicit authorization for that target, reviewed HEAD, action, and body. If it covers this exact plan, proceed without asking again; otherwise show the concrete plan and obtain authorization. A material change needs renewed authorization. A review request alone is not permission to publish or merge. Before writing, recheck that the HEAD and material review/CI facts still support the plan; if not, reassess before proceeding.
 4. Write the body to a local file and use `--body-file`; never interpolate untrusted or generated review text inside a shell-quoted `--body` argument.
 5. Execute only the authorized action.
 6. Read the resulting GitHub review/comment or merge state back and report its URL, author, state, and head SHA.
+
+Authorization must still be in force, not revoked or narrowed. It covers the intended write once, not repeated publication. Before retrying an uncertain mutation, read back whether it already took effect; do not blindly replay it or interpret a failed lookup as absence. If the outcome remains unknown, report it and stop the retry.
 
 Every review/comment body starts with `**身份：Review Agent**`. An authorized APPROVE body includes `LGTM`; other actions must not include it.
 

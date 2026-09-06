@@ -8,11 +8,19 @@
 
 | Skill | 说明 |
 |-------|------|
+| [issue-gate](skills/issue-gate/) | 按未解决的问题路由到所需门禁，复用已有证据与授权，不固定串行执行全部 Skills。 |
 | [gh-issue](skills/gh-issue/) | 以仓库 Issue 证据契约为准，安全创建、更新、评论、分类、关联和关闭 GitHub Issue。 |
 | [challenge](skills/challenge/) | 在规划或实现前挑战问题框架，检验问题是否真实、关键假设是否成立，并寻找更高杠杆的替代方案。 |
 | [grill](skills/grill/) | 用依赖感知的决策树和 frontier 逐轮消除方案中的关键决策歧义。 |
 | [impl-gate](skills/impl-gate/) | 在编码前核验 Accepted 架构是否同时覆盖算法、数据结构、失败恢复与迁移边界。 |
 | [pr-analyze](skills/pr-analyze/) | 对 GitHub PR 的精确 base/head、契约、不变量、CI、历史 finding 和代码进行证据绑定审查。 |
+
+## 使用边界
+
+- 问题前提不明用 `challenge`；存在用户拥有的重大取舍用 `grill`；实现准入用 `impl-gate`。不知道下一步用哪个时，让 `issue-gate` 路由。
+- `impl-gate` 区分完整核验和基于旧设计证据的增量核验。新 HEAD 要重新核验，但不自动要求重做设计或重复接受未变的决定。
+- `pr-analyze` 审查当前代码；复审重新运行旧复现、检查新增 diff 和受影响不变量。设计就绪不能替代代码 review。
+- Issue 写入用 `gh-issue`，PR 评论/review/merge 用 `pr-analyze`。同一目标、正文和动作已有明确授权时不重复确认；新设计接受、实现、提交、push、合并、部署各自需要相应授权。
 
 ## 安装
 

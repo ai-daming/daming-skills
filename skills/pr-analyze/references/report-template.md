@@ -2,7 +2,9 @@
 
 报告分两层：先给维护者一眼能懂的决策简报，再给可复核的技术附录。同一个事实只写一次；后文用 Finding ID、Invariant ID 或表格行号引用，不要换一种说法重复。
 
-没有执行的步骤写“未执行”并说明原因；不要用空泛的通过标记代替证据。
+按实际触发条件选择下列内容，不要求机械填满所有章节。始终保留精确 base/head、最终回读、证据边界、发现、验证和下一步。复审保留旧 head、delta、关闭账本、不变量/熔断预检与范围审计结论；架构、详细审计矩阵、复现包和 GitHub 预览按需展开。仓库要求的检查即使未执行也不能省略；写“未执行”及原因，不得伪装成“不适用”。
+
+简单 PR 可用短报告完整表达适用证据。复审的关闭状态在 B3 只记录一次，简报只提未关闭项与账本链接；不重复制作两张关闭表。人话 finding 可与 B5 技术证据合并在同一位置，其他位置引用它。
 
 ```markdown
 # PR #{number} 分析报告
@@ -33,11 +35,7 @@
 
 ## 上轮问题关闭情况（仅 re-review）
 
-| 原问题 | 人话不变量 | 当前 exact-head 结果 | 状态 |
-|---|---|---|---|
-| ... | ... | old repro + adjacent result | CLOSED / OPEN / PARTIAL / NOT RECHECKED |
-
-只解释状态一次。详细 SHA、契约锚点和复现索引放技术附录。
+{概括关闭数量和仍未关闭的 Finding ID，链接 B3 唯一的关闭账本；不要再复制一份表。}
 
 ## 当前发现
 
@@ -96,6 +94,7 @@
 | Algorithm coverage | complete / gaps / not required | ... |
 | Data-structure coverage | complete / gaps / not required | ... |
 | Design receipt | valid / stale / missing / not required | ... |
+| Verification mode | full / delta | previous baseline, impact trace and reused evidence when applicable |
 | Verdict | ... | minimum next gate |
 
 ### 关联 / 可能重复 PR
@@ -108,9 +107,9 @@
 
 ## B3. Closure ledger 与不变量
 
-| Finding | Invariant ID | 契约锚点 | 原复现 | 声称修复 commit | 当前结果 |
-|---|---|---|---|---|---|
-| ... | ... | ... | REPRO-ID | ... | ... |
+| Finding | 人话不变量 / ID | 契约锚点 | 原复现 | 声称修复 commit | 当前 exact-head 结果 | 状态 |
+|---|---|---|---|---|---|---|
+| ... | ... | ... | REPRO-ID | ... | ... | CLOSED / OPEN / PARTIAL / NOT RECHECKED |
 
 | Invariant ID | 人话命题 | 事实所有者 | 权威成员 / 等价类 | 历史违反点 | 熔断 | 范围审计 |
 |---|---|---|---|---|---|---|
@@ -213,5 +212,5 @@
 
 ---
 
-*报告由大铭的 `/pr-analyze` v0.12.0 生成。Copyright © 大铭 · [github.com/ai-daming](https://github.com/ai-daming)。*
+*报告由大铭的 `/pr-analyze` v0.13.0 生成。Copyright © 大铭 · [github.com/ai-daming](https://github.com/ai-daming)。*
 ```
