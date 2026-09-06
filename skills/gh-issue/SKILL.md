@@ -16,7 +16,7 @@ Resolve the exact action and target first. Issue mutations use this skill; PR re
 | Append history-only COMMENT | Check target identity, relevant current context, exact body, authorization, and readback. Do not migrate the Issue format or audit unrelated design/AC/dependency fields. If the text changes the contract or claims acceptance/completion, use the corresponding deeper path. |
 | Metadata-only change | Check repository semantics for the changed field, its current value, relevant relationships, and downstream impact. A contract-bearing label or Milestone is not automatically metadata-only. |
 | CREATE, contract/framing/design or relationship change | Apply the full contract and impact workflow below. |
-| Acceptance evidence, CLOSE, or REOPEN | Check the affected criteria, lifecycle rules, and evidence; CLOSE requires the completion checks below. Do not infer delivery from a design PR or an agent statement. |
+| Acceptance evidence, CLOSE, or REOPEN | Check the affected criteria, lifecycle rules, and evidence; CLOSE also requires the handover check below. Do not infer delivery from a design PR or an agent statement. |
 
 For a simple path, use a compact target/action/body-or-diff/impact/authority record. Keep the same safeguards, but omit inapplicable tables. Reuse repository policy already read when its revision and applicability remain current.
 
@@ -129,6 +129,14 @@ A comment does not redefine the contract. If a comment records an accepted requi
 - Where the repository defines a canonical contract fingerprint, a Review also binds it. This Skill does not invent that scheme or require one for repositories that have none.
 - If a required repository contract schema or canonicalization version cannot be interpreted, report `unknown` and do not preserve the dependent authorization or Review as current. Unrelated history-only comments do not acquire that dependency.
 - Close a delivery Issue only after verifying its PR, exact head, independent Review, Acceptance Criteria, required external evidence, and repository closing gates.
+
+## Handover before CLOSE
+
+For every CLOSE, apply [references/handover.md](references/handover.md) to the current body, all paginated comments, and relevant linked design, runbook and evidence sections. Reuse an existing obligation list but check changes and current destination evidence. Keyword hits are candidates, not a pass/fail oracle; unavailable required sources mean unknown, not “no remaining work.” Do not run this whole check for an unrelated history-only COMMENT.
+
+Classify each real obligation once: **done**, **handed over**, **explicitly declined**, or **unassigned/unverified**. Handover requires all three: a stable work/completion record; confirmed responsibility; and a maintained pending-work list with a review date or actionable trigger. A real release-task step can qualify without a new Issue. An assignee field or Issue number alone does not prove acceptance.
+
+Stop CLOSE when an obligation is unassigned/unverified or current AC remain unmet. Valid handover may discharge an out-of-scope obligation, but cannot relabel incomplete current AC as done. A decision to stop/cancel the original work follows repository policy and must not report successful completion. Prepare any needed destination update/create/acceptance request within scope; obtain missing authority before writing or assigning others. Close only after all required destination writes are read back and the source and destination evidence still support closure. Report the specific missing link rather than asking the user to check the whole list again.
 
 ## Hard boundaries
 

@@ -84,6 +84,16 @@ An empty cell is a design gap unless justified as not applicable.
 - Static inventories cover finite bypass/caller sets; dynamic tests cover ordering and failure windows.
 - The verification plan observes final behavior through production boundaries and does not replace the mechanism with mocks.
 
+### 9. Prerequisites and handover
+
+Identify required work described as separate, later, manual, external, or outside this implementation in the design, migration notes, relevant comments and runbook. Keyword search can locate candidates but does not establish completeness. Distinguish current AC, accepted prerequisites for a later gate, genuine out-of-scope obligations, and optional ideas/non-goals.
+
+For each required later step, cite one stable record with the remaining behavior and completion criteria, evidence that a responsible person/team accepted the work (or an established assignment policy applies), and a maintained pending-work list with a review date or actionable trigger. A runbook step qualifies when attached to an owned release task with ordering, verification, and a condition that blocks unsafe release; a free-standing document or an unowned Issue does not.
+
+Mark its actual gate. Design readiness does not mean the deployment step already ran. Missing algorithms, state transitions, sequencing, or failure semantics still block design readiness; missing acceptance/evidence routes to the appropriate unresolved gate. An in-scope acceptance criterion cannot be discharged merely by opening another Issue. Waiving an obligation needs an explicit decision by the authorized owner, with rationale and risk; changes to AC or accepted design require their normal contract/acceptance process.
+
+Reuse this evidence in the receipt's existing coverage fields; do not create a second handover database or change the receipt schema.
+
 ## VerifiedDesignReceipt
 
 Emit this YAML-shaped block only after the semantic audit is `READY`:

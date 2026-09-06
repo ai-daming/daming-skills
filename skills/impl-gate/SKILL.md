@@ -61,6 +61,10 @@ A large diff can remain inside an accepted design. A small change can require de
 
 Use [references/design-readiness-contract.md](references/design-readiness-contract.md) for full verification and for issuing/checking receipts. For delta verification, reuse previously read unchanged rules and trace evidence, and inspect all affected contract sections; if either is unavailable, read the full contract. Audit the candidate design semantically. Do not accept headings or field presence as proof. Follow behavior end to end and verify that every new concept has a production consumer and every critical transition has owned state and failure semantics.
 
+Check implementation/release prerequisites and deferred obligations in the accepted design, relevant comments, migration instructions, and runbook, not only the Issue checklist. A necessary later step must have a stable record of work and completion criteria, a confirmed responsible person/team, and a maintained pending-work list with a review date or actionable trigger. An existing release-task step can satisfy this; an Issue number or the phrase “business follow-up” alone cannot.
+
+Identify which gate each obligation affects: implementation, merge, release, or closure. A fully designed deployment prerequisite may remain unexecuted while implementation is `READY` if its ownership, ordering, validation and release-blocking condition are accepted and recorded. Missing prerequisite design is `DESIGN_REQUIRED`; unverifiable ownership/acceptance is `NEEDS_EVIDENCE`; a user-owned trade-off is `NEEDS_DECISION`. Do not turn every optional improvement into an obligation or rewrite required AC as deferred work. Record this evidence once in the existing design/receipt references; see the readiness contract's prerequisite section.
+
 Route unresolved matters precisely:
 
 - missing repository/runtime facts → `NEEDS_EVIDENCE` and investigate;

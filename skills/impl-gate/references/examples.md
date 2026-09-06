@@ -14,6 +14,12 @@ Request: Continue an already authorized implementation after a local commit. The
 
 Expected result: delta verification and a new `READY` receipt at the current baseline. Reuse existing design acceptance and scope-specific implementation authority without asking again. The old code review does not approve this HEAD; independent review must reassess it. If the delta instead introduces an uncovered restart or ownership rule, enter full verification and report the actual gap.
 
+## READY with an outstanding release prerequisite
+
+Request: Implement a resolver whose accepted design requires legacy data mapping before activation. The mapping algorithm, failure handling, release ordering and verification are defined; an owned release task contains the mandatory mapping step and blocks activation until it passes.
+
+Expected result: implementation may be `READY`, but release remains gated on the mapping result. Reuse the release task instead of requiring a duplicate Issue. If the mapping is only mentioned as “execute separately” with no algorithm or sequencing, report `DESIGN_REQUIRED`; if the design is complete but the claimed assignment cannot be verified, report `NEEDS_EVIDENCE`.
+
 ## DESIGN_REQUIRED — goals and data shapes without an algorithm
 
 Request: Reduce GitHub calls across several worktrees. The Issue lists counters, cache records, rate-limit headers, and acceptance tests, but does not decide who owns scheduling, how requests are admitted or merged, what scope shares a budget, what happens on restart, or how uncertain writes are handled.

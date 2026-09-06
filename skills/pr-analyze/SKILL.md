@@ -2,7 +2,7 @@
 name: pr-analyze
 description: Analyze or review a GitHub pull request from a PR number, URL, or owner/repo#number. Also use when the user says review again, re-review, 重新 review, 再 review, or equivalent for the current PR. Produce an evidence-bound Chinese report covering exact base/head SHAs, prior-finding closure, invariants, CI and merge gates, code findings, scope drift, and safe next actions.
 metadata:
-  version: "0.13.0"
+  version: "0.14.0"
   author: "大铭 (https://github.com/ai-daming)"
   copyright: "Copyright © 大铭"
   compatibility: "Requires authenticated GitHub CLI (gh) and Git; matching local worktree preferred, isolated clone fallback."
@@ -201,6 +201,16 @@ Every reported finding must include severity, confidence, exact path and line at
 - observed repository or GitHub fact
 - inference supported by that fact
 - recommendation or product judgment
+
+### Remaining obligations and the gate they affect
+
+During requirements and completeness review, inspect remaining work in the PR/Issue body, paginated comments, relevant accepted design, migration/runbook steps, and findings. Trace actual dependencies as well as search terms like “follow-up” or “另行执行”; a keyword is only a candidate. Reconcile completed items and exclude genuine optional ideas/non-goals with a reason. Required-source read failures are unknown, not an empty list.
+
+For each real remaining obligation, record once whether it is done, handed over, explicitly declined by an authorized owner, or still unassigned/unverified. Handover needs a stable work/completion record, confirmed responsible person/team (or an established assignment policy), and a maintained pending-work list with a review date or actionable trigger. Existing owned release-task steps qualify; a new Issue number alone does not. Recheck receiving evidence for material changes before relying on it.
+
+Name the affected gate and contract anchor: current implementation/merge AC cannot be discharged by another Issue; a designed, owned and enforced release prerequisite may remain open at merge while still blocking release. Do not promote every future task into a CRITICAL code finding, and do not call a later-gate dependency completed. Missing required handover is a specific process/evidence blocker for the gate it governs. A risk waiver cannot silently rewrite AC or authorize a new design.
+
+If a proposed merge would auto-close linked Issues, verify their current closing AC and handover dispositions before recommending or executing that merge. If auto-closure would falsely mark unfinished work complete, stop that merge; propose an explicitly authorized correction to the closing relationship/contract instead. Do not treat this check as permission to edit Issues, create tasks, or assign others.
 
 ### Human-readable review contract
 

@@ -196,6 +196,14 @@
 |---|---|---|---|---|
 | ... | ... | ... | ... | 保留 / 复用 / 删除 / follow-up |
 
+### 未完成义务（存在相关事项时）
+
+| 事项 / 来源 | 当前 AC 或后续关口 | 状态 | 完成证据或承接链接 | 责任及接受依据 | 复查日期 / 触发条件 | 缺口及阻塞动作 |
+|---|---|---|---|---|---|---|
+| ... | implementation / merge / release / closure | 已完成 / 已移交 / 明确不做 / 尚未承接 | ... | ... | ... | ... |
+
+复用已有移交清单并链接；不要复制第二份。真正非目标/可选建议可简述排除理由。无相关义务时简述核验范围，不建空表；必要来源未读到不得称“无”。仅阻塞其实际所属关口；另建 Issue 不等于原 AC 完成。若 merge 会自动关闭关联 Issue，核对其关闭条件及本表证据。
+
 ## B8. GitHub 操作预览（仅用户请求 mutation 时）
 
 **目标**: `{owner/repo}#{number}` at `{headRefOid}`
@@ -212,5 +220,5 @@
 
 ---
 
-*报告由大铭的 `/pr-analyze` v0.13.0 生成。Copyright © 大铭 · [github.com/ai-daming](https://github.com/ai-daming)。*
+*报告由大铭的 `/pr-analyze` v0.14.0 生成。Copyright © 大铭 · [github.com/ai-daming](https://github.com/ai-daming)。*
 ```
