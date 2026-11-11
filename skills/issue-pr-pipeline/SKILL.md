@@ -37,7 +37,7 @@ description: 编排「Issue → Spec 准入与决策包 → Coding Agent 实现 
 
 ## 人工关口（仅两个）
 
-1. **决策包**：Spec Agent 产出后，编排者原样呈现给用户（每题已含推荐答案），用户一条消息批量拍板或全采纳推荐。禁止拆成多次零碎询问；用户未答前不得启动 Coding Agent。
+1. **决策包**：Spec Agent 产出后，用户跑 `run.sh answer`（逐题交互、回车采纳推荐）或一行式作答；禁止拆成多次零碎询问；用户未答前不得启动 Coding Agent。
 2. **合并放行**：按 `merge_policy`——`auto-if-green`（绿门自动合并，红门挂起问人）或 `manual`（总是问人）。带红合并必须由用户明确拍板并记录豁免理由。
 
 关单动作（预检的 completed / not planned 出口）需用户确认后按 `gh-issue` 协议执行，不自动关闭。
@@ -58,6 +58,8 @@ issue-ref 支持四种写法：`500`（裸号，需 config 顶层配好默认仓
 ```bash
 cd <本 skill 目录>
 ./run.sh spec ai-daming/mamamate#500   # 多项目推荐写法：仓库从参数解析
+./run.sh answer ai-daming/mamamate#500   # 交互答题：逐题选、回车=推荐、可写意见；答完问是否继续出契约
+./run.sh answer ai-daming/mamamate#500 "Q1=B;Q2=A"  # 非交互一行式（编排 agent 用）
 ./run.sh spec 500                      # 裸号：用 config 顶层 repo/base_branch/main_repo_path
 ./run.sh init <issue-ref>              # 创建 Coding Agent 专属 worktree/分支
 ./run.sh coding <issue-ref> <round>    # Coding Agent 第 round 轮（1=实现，>1=按反馈返工）

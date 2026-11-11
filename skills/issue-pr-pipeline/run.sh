@@ -280,6 +280,43 @@ cmd_cleanup() {
   echo "KEPT 证据文件：logs/ contract.md decision-package*.md state.env（体积小，可长期保留）"
 }
 
+cmd_answer() { # 交互答题：逐题选/回车=推荐；或非交互 ./run.sh answer <issue> "Q1=B;Q2=A"
+  local answers="${WORK}/decision-package.answers.md"
+  local pkg_json="${WORK}/decision-package.json"
+  [ -f "$pkg_json" ] || { echo "ERROR: 缺少 ${pkg_json}；先跑 spec 出决策包（旧版决策包无 json，可手写 ${answers}，格式 Q1: B）" >&2; exit 2; }
+  : > "$answers"
+  local inline="${3:-}"
+  if [ -n "$inline" ]; then
+    printf '%s\n' "$inline" | tr ';' '\n' | while IFS= read -r pair; do
+      local q a; q="${pair%%=*}"; a="${pair#*=}"
+      if [ -n "${q// /}" ] && [ -n "$a" ]; then echo "${q}: ${a}" >> "$answers"; fi
+    done
+  else
+    local n; n="$(jq '.questions | length' "$pkg_json")"
+    local i=0 id title rec ans
+    echo "共 ${n} 题。回车 = 采纳推荐；也可直接输入选项键或写下你的意见。"
+    while [ "$i" -lt "$n" ]; do
+      id="$(jq -r --argjson i "$i" '.questions[$i].id' "$pkg_json")"
+      title="$(jq -r --argjson i "$i" '.questions[$i].title' "$pkg_json")"
+      rec="$(jq -r --argjson i "$i" '.questions[$i].recommendation // empty' "$pkg_json")"
+      printf '\n%s %s\n' "$id" "$title"
+      jq -r --argjson i "$i" '.questions[$i].options[] | "  \(.key)) \(.label)"' "$pkg_json"
+      [ -n "$rec" ] && printf '  （推荐 %s）\n' "$rec"
+      printf '你的选择: '
+      read -r ans
+      [ -z "$ans" ] && ans="${rec:-（未答）}"
+      echo "${id}: ${ans}" >> "$answers"
+      i=$((i+1))
+    done
+  fi
+  echo; echo "答复已保存：${answers}"; sed 's/^/  /' "$answers"
+  if [ -t 0 ]; then
+    printf '\n现在继续生成实施契约？[Y/n] '
+    local go; read -r go
+    if [ "${go:-Y}" = "Y" ] || [ "${go:-Y}" = "y" ]; then cmd_spec; fi
+  fi
+}
+
 cmd_status() {
   echo "issue=${issue} repo=${REPO} base=${BASE} branch=${BRANCH}"
   echo "work=${WORK}"
@@ -291,7 +328,7 @@ cmd_status() {
 }
 
 # ---------- 入口 ----------
-stage="${1:?usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|cleanup|status> <issue> [round]}"
+stage="${1:?usage: run.sh [-c config.json] <spec|answer|init|coding|review|finish|loop|cleanup|status> <issue> [round|Q1=B...]}"
 lock
 case "$stage" in
   spec)   cmd_spec ;;
@@ -300,6 +337,7 @@ case "$stage" in
   review) cmd_review "$@" ;;
   finish) cmd_finish "$@" ;;
   loop)   cmd_loop ;;
+  answer) cmd_answer "$@" ;;
   cleanup) cmd_cleanup ;;
   status) cmd_status ;;
   *) echo "usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|cleanup|status> <issue> [round]"; exit 1 ;;

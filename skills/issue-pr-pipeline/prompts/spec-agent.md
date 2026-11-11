@@ -22,6 +22,9 @@
 
 - 建决策树与 frontier；**只把当前可答的题**写进决策包；依赖未决答案的后续题放「预告」区。
 - 决策包写到 `__WORK__/decision-package.md`，每题严格用 grill 格式（背景/举例/选项+可观察后果/Recommendation+理由/你现在只需要决定/Technical mapping），必带推荐答案。
+- 同时写机器可读版 `__WORK__/decision-package.json`，结构：
+  `{"issue": <号>, "questions": [{"id": "Q1", "title": "<一句话题面>", "recommendation": "<键>", "options": [{"key": "A", "label": "<一句话选项>"}]}]}`
+  供 `run.sh answer` 交互答题使用，题目必须与 md 版一一对应。
 - 若 `__WORK__/decision-package.answers.md` 存在（用户已批量拍板），跳过出题，直接进入第四步；用户答复中若有含糊或矛盾，按 grill 规则当面列为追问，不擅自解释。
 
 **没有任何 material 决策**（事实已完全决定实现）时跳过决策包直接成文。
