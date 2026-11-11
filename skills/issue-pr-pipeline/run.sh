@@ -152,13 +152,14 @@ expect_line() { # $1=file $2=pattern
 }
 
 # ---------- 阶段 ----------
-PIPELINE_LABELS="pipeline/hold pipeline/decisions pipeline/queued pipeline/blocked pipeline/merged"
+PIPELINE_LABELS="pipeline/hold pipeline/manual pipeline/decisions pipeline/queued pipeline/blocked pipeline/merged"
 
 ensure_pipeline_label() { # $1=标签名（不存在则建，带中文描述）
   gh label view "$1" --repo "$REPO" >/dev/null 2>&1 && return 0
   local desc color
   case "$1" in
     pipeline/hold) desc="流水线：不适用自动交付，原因见评论"; color=8b8680 ;;
+    pipeline/manual) desc="流水线：维护者自行处理，不进入自动交付"; color=6f42c1 ;;
     pipeline/decisions) desc="流水线：待拍板，决策包见评论"; color=d93f0b ;;
     pipeline/queued) desc="流水线：开发队列进行中"; color=1d76db ;;
     pipeline/blocked) desc="流水线：中途受阻，需人工解锁，现场快照见评论"; color=b60205 ;;
@@ -201,6 +202,11 @@ post_issue_trace() { # $1=阶段 $2=正文文件 $3=state键
 }
 
 cmd_spec() {
+  # 护栏：维护者圈地的单（大重构/设计/亲手写）不进流水线；解除方式 = 亲手摘标签
+  if gh issue view "$issue" --repo "$REPO" --json labels --jq '.labels[].name' 2>/dev/null | grep -qx 'pipeline/manual'; then
+    echo "ERROR: issue #${issue} 已标记 pipeline/manual（维护者自行处理）。如确要进入流水线，请先手动移除该标签。" >&2
+    exit 2
+  fi
   run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md"
   local verdict; verdict="$(expect_line "${LOGS}/spec-output.md" '^SPEC_RESULT:')"
   echo "SPEC => ${verdict:-缺失输出契约}"
