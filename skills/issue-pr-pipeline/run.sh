@@ -145,7 +145,7 @@ stream_filter() { # 从 JSONL 事件流中吐人读进度：工具调用 + 正�
         local ev; ev="$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type // empty' 2>/dev/null || true)"
         case "$ev" in
           text_start) printf '\n' ;;
-          text_delta) printf '%s' "$(printf '%s' "$line" | jq -r '.assistantMessageEvent.delta // empty' 2>/dev/null || true)" ;;
+          text_delta) printf '%s' "$line" | jq -j '.assistantMessageEvent.delta // empty' 2>/dev/null || true ;;
         esac ;;
     esac
   done
@@ -156,6 +156,7 @@ run_agent() { # $1=template $2=session $3=cwd $4=log
   render_prompt "$1" "$prompt"
   local evlog="${4}.events.jsonl"
   ( cd "$3" && "$AGENT_CLI" --mode json --session-id "mm${issue}-$2" "$(cat "$prompt")" ) | tee -a "$evlog" | stream_filter || true
+  printf '\n'  # 确保流结束后后续 echo 另起一行
   # 从事件流提取全部助手正文（含末尾输出契约行）写入日志
   jq -r 'select(.type == "message_end" and .message.role == "assistant") | .message.content[]? | select(.type == "text") | .text, ""' "$evlog" 2>/dev/null >> "$4" || true
 }
