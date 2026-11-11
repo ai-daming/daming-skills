@@ -10,7 +10,9 @@ set -euo pipefail
 # 之后原文件可被编辑（git pull/热修）而不影响在跑实例（bash 懒读取的是快照）
 if [ "${PIPELINE_SNAPSHOT:-0}" != "1" ]; then
   _orig_dir="$(cd "$(dirname "$0")" && pwd)"
-  _snap="$(mktemp "${TMPDIR:-/tmp}/ipp-snapshot.XXXXXX.sh")"
+  _snap_dir="${TMPDIR:-/tmp}"
+  rm -f "${_snap_dir}"/ipp-snapshot.* 2>/dev/null || true  # 清理陈旧快照（运行中实例已持有 fd，unlink 安全）
+  _snap="$(mktemp "${_snap_dir}/ipp-snapshot.XXXXXX")"
   cat "${_orig_dir}/run.sh" > "${_snap}"
   chmod +x "${_snap}"
   PIPELINE_SNAPSHOT=1 PIPELINE_SKILL_DIR="${_orig_dir}" exec bash "${_snap}" "$@"
