@@ -241,6 +241,7 @@ EOF
 
 cmd_loop() {
   # 全自动循环：在两个人工关口自动停（决策包未决、合并红门）
+  # 铁律：任何停机状态必须在 GitHub 留痕（无人值守时终端不可靠）；回写失败仅警告不中断
   if [ ! -f "${WORK}/contract.md" ]; then
     echo "SPEC_GATE: 契约未就绪。先跑 spec 阶段；若已产出 decision-package.md，请收集用户答复写入 decision-package.answers.md 后重跑 spec" >&2
     exit 3
@@ -251,26 +252,47 @@ cmd_loop() {
     echo "=== ROUND ${round}: coding ==="
     cmd_coding loop "$issue" "$round"
     pr="$(state_last PR)"
-    [ -n "$pr" ] || { echo "NO_PR: coding 未产出 PR，停机等人工" >&2; exit 3; }
+    [ -n "$pr" ] || {
+      echo "NO_PR: coding 未产出 PR，停机等人工" >&2
+      { printf '🤖 流水线自动生成 · 阶段：coding\n\n第 %s 轮 Coding Agent 未产出 PR（BLOCKED 或输出契约缺失），已停机等人工。本地日志：issue-%s/logs/round%s-coding-output.md\n' "$round" "$issue" "$round" \
+        | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
+        || echo "WARN: issue 回写失败，日志仅在本地" >&2; }
+      exit 3; }
     echo "=== ROUND ${round}: review (PR #${pr}) ==="
     cmd_review loop "$issue" "$round"
     verdict="$(state_last VERDICT)"
     case "$verdict" in
       APPROVE)
         if [ "$MERGE_POLICY" = "manual" ]; then
+          { printf '🤖 流水线自动生成 · 阶段：review\n\n审查通过（第 %s 轮，pr-analyze 协议）。按 manual 策略等维护者合并：`./run.sh finish %s %s`（带红合并 FORCE=1）。报告：issue-%s/logs/round%s-review-output.md\n' "$round" "$ISSUE_REF" "$round" "$issue" "$round" \
+            | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
+            || echo "WARN: PR 回写失败，结论仅在本地" >&2; }
           echo "REVIEW_APPROVED: 审查通过。按 manual 策略等你拍板合并： ./run.sh finish ${ISSUE_REF} ${round}（带红合并 FORCE=1）" >&2
           exit 6
         fi
         if cmd_finish loop "$issue" "$round"; then exit 0; fi
+        { printf '🤖 流水线自动生成 · 阶段：merge\n\n审查通过但门禁未绿，已挂起；带红合并需维护者拍板后 FORCE=1 ./run.sh finish %s %s。归因见审查报告。\n' "$ISSUE_REF" "$round" \
+          | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
+          || echo "WARN: PR 回写失败" >&2; }
         echo "MERGE_GATE: 门禁未绿，已挂起；带红合并需用户拍板后 FORCE=1 重跑 finish" >&2
         exit 6 ;;
       CHANGES_REQUIRED)
-        gh issue comment "$issue" --repo "$REPO" --body-file "${LOGS}/round${round}-review-feedback.md"
+        { printf '🤖 流水线自动生成 · 阶段：review\n\n' | cat - "${LOGS}/round${round}-review-feedback.md" \
+          | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
+          || echo "WARN: issue 回写失败，反馈仅在本地 ${LOGS}/round${round}-review-feedback.md" >&2; }
         echo "round ${round} 打回，反馈已评论 issue，进入 round $((round+1))"
         round=$((round+1)) ;;
-      *) echo "verdict=${verdict}；停机等人工" >&2; exit 4 ;;
+      *)
+        { printf '🤖 流水线自动生成 · 阶段：review\n\n' | cat - "${LOGS}/round${round}-review-output.md" \
+          | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
+          || echo "WARN: PR 回写失败，报告仅在本地 ${LOGS}/round${round}-review-output.md" >&2; }
+        echo "verdict=${verdict}；停机等人工（报告已回写 PR）" >&2
+        exit 4 ;;
     esac
   done
+  { printf '🤖 流水线自动生成 · 阶段：review\n\n%s 轮内未获 APPROVE，按安全阀停机等人工；各轮反馈见本 issue 评论区与本地 logs。\n' "$MAX_ROUNDS" \
+    | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
+    || echo "WARN: issue 回写失败" >&2; }
   echo "MAX_ROUNDS(${MAX_ROUNDS}) 未通过；停机等人工" >&2
   exit 5
 }
