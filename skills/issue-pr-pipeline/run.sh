@@ -6,7 +6,18 @@
 # 依赖: bash 4+, jq, gh, 以及 config.json 中配置的 agent CLI（默认 pi）
 set -euo pipefail
 
-SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 防运行中偏移错位：首次执行时把自身快照到临时文件并 exec 快照，
+# 之后原文件可被编辑（git pull/热修）而不影响在跑实例（bash 懒读取的是快照）
+if [ "${PIPELINE_SNAPSHOT:-0}" != "1" ]; then
+  _orig_dir="$(cd "$(dirname "$0")" && pwd)"
+  _snap="$(mktemp "${TMPDIR:-/tmp}/ipp-snapshot.XXXXXX.sh")"
+  cat "${_orig_dir}/run.sh" > "${_snap}"
+  chmod +x "${_snap}"
+  PIPELINE_SNAPSHOT=1 PIPELINE_SKILL_DIR="${_orig_dir}" exec bash "${_snap}" "$@"
+fi
+trap 'rm -f "$0"' EXIT
+
+SKILL_DIR="${PIPELINE_SKILL_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 SKILLS_DIR="$(dirname "$SKILL_DIR")"
 
 # ---------- 配置（可用 -c 指定其他项目；默认本目录 config.json） ----------
@@ -93,12 +104,12 @@ LOCK_DIR="${WORK}/.lock"
 lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     echo $$ > "${LOCK_DIR}/pid"
-    trap 'rm -rf "${LOCK_DIR}"' EXIT
+    trap 'rm -rf "${LOCK_DIR}"; [ "${PIPELINE_SNAPSHOT:-0}" = "1" ] && rm -f "$0"' EXIT
   else
     local pid; pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null || echo '?')"
     if [ "$pid" != "?" ] && ! kill -0 "$pid" 2>/dev/null; then
       echo "WARN: 清理陈旧锁 (pid ${pid})" >&2; rm -rf "${LOCK_DIR}"; mkdir "$LOCK_DIR"; echo $$ > "${LOCK_DIR}/pid"
-      trap 'rm -rf "${LOCK_DIR}"' EXIT
+      trap 'rm -rf "${LOCK_DIR}"; [ "${PIPELINE_SNAPSHOT:-0}" = "1" ] && rm -f "$0"' EXIT
     else
       echo "ERROR: issue ${issue} 已有实例在运行 (pid ${pid})；如确认误锁请手动删除 ${LOCK_DIR}" >&2
       exit 9
