@@ -79,6 +79,7 @@ PROJECT="$(printf '%s' "$PROJECT" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/-\{2,\}
 [ -n "$PROJECT" ] || PROJECT="project"
 
 # ---------- 每期状态 ----------
+ISSUE_REF="${REPO}#${issue}"
 WORK="${WORK_ROOT}/${PROJECT}/issue-${issue}"
 LOGS="${WORK}/logs"
 STATE="${WORK}/state.env"
@@ -155,6 +156,16 @@ cmd_spec() {
   run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md"
   local verdict; verdict="$(expect_line "${LOGS}/spec-output.md" '^SPEC_RESULT:')"
   echo "SPEC => ${verdict:-缺失输出契约}"
+  # 人在终端时：出了决策包直接进答题器，答完自动续跑 spec（防止追问死循环，最多链 3 次）
+  case "$verdict" in
+    *DECISIONS_REQUIRED*)
+      if [ -t 0 ] && [ "${SPEC_CHAIN:-0}" -lt 3 ]; then
+        export SPEC_CHAIN=$(( ${SPEC_CHAIN:-0} + 1 ))
+        cmd_answer "$@"
+      else
+        echo "下一步： ./run.sh answer ${ISSUE_REF} 逐题拍板（非交互用： ./run.sh answer ${ISSUE_REF} 'Q1=B'）"
+      fi ;;
+  esac
 }
 
 cmd_init() {
