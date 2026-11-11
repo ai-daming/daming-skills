@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # issue-pr-pipeline 编排脚本
-# 用法: ./run.sh {spec|init|a|b|finish|status} <issue> [round] [options]
+# 用法: ./run.sh [-c <config.json>] <stage> <issue> [round]
 # 依赖: bash 4+, jq, gh, 以及 config.json 中配置的 agent CLI（默认 pi）
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$(dirname "$SKILL_DIR")"
 
-# ---------- 配置 ----------
+# ---------- 配置（可用 -c 指定其他项目；默认本目录 config.json） ----------
 CONFIG="${SKILL_DIR}/config.json"
+if [ "${1:-}" = "-c" ]; then
+  CONFIG="${2:?-c 需要路径}"
+  shift 2
+fi
 if [ ! -f "$CONFIG" ]; then
-  echo "ERROR: 缺少 ${CONFIG}；请复制 config.example.json 为 config.json 并填写" >&2
+  echo "ERROR: 缺少 ${CONFIG}；请复制 config.example.json 为 config.json 并填写（多项目可建多份，用 -c 选择）" >&2
   exit 1
 fi
 command -v jq >/dev/null || { echo "ERROR: 需要 jq" >&2; exit 1; }
@@ -199,7 +203,7 @@ cmd_status() {
 }
 
 # ---------- 入口 ----------
-stage="${1:?usage: run.sh <spec|init|coding|review|finish|loop|status> <issue> [round]}"
+stage="${1:?usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|status> <issue> [round]}"
 lock
 case "$stage" in
   spec)   cmd_spec ;;
@@ -209,5 +213,5 @@ case "$stage" in
   finish) cmd_finish "$@" ;;
   loop)   cmd_loop ;;
   status) cmd_status ;;
-  *) echo "usage: run.sh <spec|init|coding|review|finish|loop|status> <issue> [round]"; exit 1 ;;
+  *) echo "usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|status> <issue> [round]"; exit 1 ;;
 esac

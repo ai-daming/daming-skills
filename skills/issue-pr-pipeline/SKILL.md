@@ -64,7 +64,23 @@ cd <本 skill 目录>
 ./run.sh status <issue>    # 查看当前状态
 ```
 
-所有状态与日志在 `config.json` 的 `work_dir` 下按 issue 分目录存放。
+启动目录无关：脚本从自身位置与 config.json 解析一切路径，在任何目录执行都一样。
+
+**多项目**：每个项目一份配置（如 `configs/project-a.json`、`configs/project-b.json`，均不入库），用 `-c` 选择：
+
+```bash
+./run.sh -c configs/project-a.json spec 500
+```
+
+## 工作区布局：各 agent 在哪里干活
+
+| Agent | 工作目录 | 说明 |
+|---|---|---|
+| Spec | `main_repo_path`（目标项目本地主检出） | 只读纪律；在此目录是为了自动加载项目的 agent 指引（AGENTS.md 等） |
+| Coding | `work_dir/issue-<N>/wt`（专属 git worktree，分支 `agent/issue-<N>`） | 与你的主检出完全隔离；worktree 是全量检出，项目指引同样自动加载 |
+| Review | `main_repo_path` + 按协议在系统临时目录建独立 detached worktree | pr-analyze 自管审查工作树 |
+
+每期状态集中在 `work_dir/issue-<N>/`：`state.env`（PR 号/轮次/verdict）、`decision-package(.answers).md`、`contract.md`、`wt/`、`logs/`（各轮完整输出与反馈，只追加不删除）。
 
 ## Agent 输出契约
 
