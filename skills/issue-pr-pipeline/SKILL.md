@@ -60,6 +60,7 @@ cd <本 skill 目录>
 ./run.sh coding <issue> <round> # Coding Agent 第 round 轮（1=实现，>1=按反馈返工）
 ./run.sh review <issue> <round> # Review Agent 审查该轮 PR
 ./run.sh finish <issue> <round>  # 合并 + issue 评论
+./run.sh loop <issue>     # 全自动循环（契约就绪后）：两个人工关口自动停（决策包未决/合并红门）
 ./run.sh status <issue>    # 查看当前状态
 ```
 
