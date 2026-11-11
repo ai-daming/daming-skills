@@ -156,6 +156,38 @@ EOF
   echo "MERGED pr=${pr}"
 }
 
+cmd_loop() {
+  # 全自动循环：在两个人工关口自动停（决策包未决、合并红门）
+  if [ ! -f "${WORK}/contract.md" ]; then
+    echo "SPEC_GATE: 契约未就绪。先跑 spec 阶段；若已产出 decision-package.md，请收集用户答复写入 decision-package.answers.md 后重跑 spec" >&2
+    exit 3
+  fi
+  cmd_init
+  local round=1 pr verdict
+  while [ "$round" -le "$MAX_ROUNDS" ]; do
+    echo "=== ROUND ${round}: coding ==="
+    cmd_coding loop "$issue" "$round"
+    pr="$(state_last PR)"
+    [ -n "$pr" ] || { echo "NO_PR: coding 未产出 PR，停机等人工" >&2; exit 3; }
+    echo "=== ROUND ${round}: review (PR #${pr}) ==="
+    cmd_review loop "$issue" "$round"
+    verdict="$(state_last VERDICT)"
+    case "$verdict" in
+      APPROVE)
+        if cmd_finish loop "$issue" "$round"; then exit 0; fi
+        echo "MERGE_GATE: 门禁未绿或策略为 manual，已挂起；带红合并需用户拍板后 FORCE=1 重跑 finish" >&2
+        exit 6 ;;
+      CHANGES_REQUIRED)
+        gh issue comment "$issue" --repo "$REPO" --body-file "${LOGS}/round${round}-review-feedback.md"
+        echo "round ${round} 打回，反馈已评论 issue，进入 round $((round+1))"
+        round=$((round+1)) ;;
+      *) echo "verdict=${verdict}；停机等人工" >&2; exit 4 ;;
+    esac
+  done
+  echo "MAX_ROUNDS(${MAX_ROUNDS}) 未通过；停机等人工" >&2
+  exit 5
+}
+
 cmd_status() {
   echo "issue=${issue} repo=${REPO} base=${BASE} branch=${BRANCH}"
   echo "work=${WORK}"
@@ -167,7 +199,7 @@ cmd_status() {
 }
 
 # ---------- 入口 ----------
-stage="${1:?usage: run.sh <spec|init|coding|review|finish|status> <issue> [round]}"
+stage="${1:?usage: run.sh <spec|init|coding|review|finish|loop|status> <issue> [round]}"
 lock
 case "$stage" in
   spec)   cmd_spec ;;
@@ -175,6 +207,7 @@ case "$stage" in
   coding) cmd_coding "$@" ;;
   review) cmd_review "$@" ;;
   finish) cmd_finish "$@" ;;
+  loop)   cmd_loop ;;
   status) cmd_status ;;
-  *) echo "usage: run.sh <spec|init|coding|review|finish|status> <issue> [round]"; exit 1 ;;
+  *) echo "usage: run.sh <spec|init|coding|review|finish|loop|status> <issue> [round]"; exit 1 ;;
 esac
