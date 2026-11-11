@@ -125,8 +125,8 @@ stream_filter() { # 从 JSONL 事件流中吐人读进度：工具调用 + 正�
     local t; t="$(printf '%s' "$line" | jq -r '.type // empty' 2>/dev/null || true)"
     case "$t" in
       tool_execution_start)
-        printf '\n[%s] 🔧 %s\n' "$(date +%H:%M:%S)" \
-          "$(printf '%s' "$line" | jq -r '.toolName as $n | (.args // {}) | to_entries | map(.key + "=" + (.value|tostring)) | join(" ") | $n + " " + .' 2>/dev/null | tr '\n' ' ' | awk '{print substr($0,1,100)}')" ;;
+        printf '\n[%s] 🔧 %s\n' "$(date +%H:%M:%S)" "$(printf '%s' "$line" | jq -r '.toolName' 2>/dev/null || true)"
+        printf '%s' "$line" | jq -r '(.args // {}) | to_entries[] | "  \(.key): \(.value|tostring)"' 2>/dev/null || true ;;
       message_update)
         local ev; ev="$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type // empty' 2>/dev/null || true)"
         case "$ev" in
