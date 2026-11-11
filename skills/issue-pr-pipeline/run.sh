@@ -211,6 +211,7 @@ cmd_spec() {
   local verdict; verdict="$(expect_line "${LOGS}/spec-output.md" '^SPEC_RESULT:')"
   echo "SPEC => ${verdict:-缺失输出契约}"
   # 全程留痕：每个出口都在 issue 留下对应产物
+  # 注意匹配顺序与锚定：NOT_READY 含 READY 子串，必须先判 NOT 分支，READY 用前缀锚定
   case "$verdict" in
     *DECISIONS_REQUIRED*)
       [ -f "${WORK}/decision-package.md" ] \
@@ -223,16 +224,16 @@ cmd_spec() {
       else
         echo "下一步： ./run.sh answer ${ISSUE_REF} 逐题拍板（非交互用： ./run.sh answer ${ISSUE_REF} 'Q1=B'）"
       fi ;;
-    *READY*)
+    *CLOSE_RECOMMENDED*|*NOT_READY*)
+      post_issue_trace spec-note "${LOGS}/spec-output.md" SPEC_NOTE_POSTED
+      set_pipeline_label pipeline/hold
+      echo "spec 建议已回写 issue，等维护者确认" ;;
+    "SPEC_RESULT: READY"*)
       # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕
       [ -f "${WORK}/contract.md" ] \
         && post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED
       set_pipeline_label ""
       echo "契约已就绪，下一步： ./run.sh loop ${ISSUE_REF}" ;;
-    *CLOSE_RECOMMENDED*|*NOT_READY*)
-      post_issue_trace spec-note "${LOGS}/spec-output.md" SPEC_NOTE_POSTED
-      set_pipeline_label pipeline/hold
-      echo "spec 建议已回写 issue，等维护者确认" ;;
   esac
 }
 
