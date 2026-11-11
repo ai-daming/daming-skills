@@ -169,7 +169,7 @@ expect_line() { # $1=file $2=pattern
 }
 
 # ---------- 阶段 ----------
-PIPELINE_LABELS="pipeline/hold pipeline/manual pipeline/decisions pipeline/queued pipeline/blocked pipeline/merged"
+PIPELINE_LABELS="pipeline/hold pipeline/manual pipeline/decisions pipeline/ready pipeline/queued pipeline/blocked pipeline/merged"
 
 ensure_pipeline_label() { # $1=标签名（不存在则建，带中文描述）
   gh label view "$1" --repo "$REPO" >/dev/null 2>&1 && return 0
@@ -178,6 +178,7 @@ ensure_pipeline_label() { # $1=标签名（不存在则建，带中文描述）
     pipeline/hold) desc="流水线：不适用自动交付，原因见评论"; color=8b8680 ;;
     pipeline/manual) desc="流水线：维护者自行处理，不进入自动交付"; color=6f42c1 ;;
     pipeline/decisions) desc="流水线：待拍板，决策包见评论"; color=d93f0b ;;
+    pipeline/ready) desc="流水线：契约就绪，待启动开发（./run.sh loop）"; color=00b8d9 ;;
     pipeline/queued) desc="流水线：开发队列进行中"; color=1d76db ;;
     pipeline/blocked) desc="流水线：中途受阻，需人工解锁，现场快照见评论"; color=b60205 ;;
     pipeline/merged) desc="流水线：已合并，待维护者验收后关单"; color=0e8a16 ;;
@@ -249,7 +250,7 @@ cmd_spec() {
       # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕
       [ -f "${WORK}/contract.md" ] \
         && post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED
-      set_pipeline_label ""
+      set_pipeline_label pipeline/ready
       echo "契约已就绪，下一步： ./run.sh loop ${ISSUE_REF}" ;;
   esac
 }

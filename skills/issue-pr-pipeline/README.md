@@ -74,6 +74,7 @@ cd <skill 目录>
 | `pipeline/hold` | 不适用（要真机/业务没定），原因见评论，条件变了会毕业 |
 | `pipeline/manual` | 维护者保留地，机器一律跳过（人打人摘） |
 | `pipeline/decisions` | 待拍板，决策包见评论 |
+| `pipeline/ready` | 契约就绪，待启动开发（./run.sh loop） |
 | `pipeline/queued` | 开发队列进行中 |
 | `pipeline/blocked` | 中途受阻，等你解锁，现场快照见评论 |
 | `pipeline/merged` | 已合并，差你验收后关单 |
