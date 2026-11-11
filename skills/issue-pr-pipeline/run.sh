@@ -152,13 +152,34 @@ expect_line() { # $1=file $2=pattern
 }
 
 # ---------- 阶段 ----------
+file_hash() { [ -f "$1" ] && shasum "$1" | awk '{print $1}' || echo missing; }
+
+# 回写 issue：带 🤖 徽标，幂等（内容哈希变了才重发）；回写失败只警告不中断
+post_issue_trace() { # $1=阶段 $2=正文文件 $3=state键
+  local stage="$1" body="$2" key="$3" h payload
+  h="$(file_hash "$body")"
+  [ "$(state_last "$key")" = "$h" ] && return 0
+  payload="${WORK}/.trace-${key}.md"
+  printf '🤖 流水线自动生成 · 阶段：%s\n\n---\n\n' "$stage" | cat - "$body" > "$payload"
+  if gh issue comment "$issue" --repo "$REPO" --body-file "$payload" 2>/dev/null; then
+    state_set "${key}=${h}"
+    echo "已回写 issue（${stage}）"
+    return 0
+  fi
+  echo "WARN: 回写失败（网络？），仅在本地 ${body}" >&2
+  return 1
+}
+
 cmd_spec() {
   run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md"
   local verdict; verdict="$(expect_line "${LOGS}/spec-output.md" '^SPEC_RESULT:')"
   echo "SPEC => ${verdict:-缺失输出契约}"
-  # 人在终端时：出了决策包直接进答题器，答完自动续跑 spec（防止追问死循环，最多链 3 次）
+  # 全程留痕：每个出口都在 issue 留下对应产物
   case "$verdict" in
     *DECISIONS_REQUIRED*)
+      [ -f "${WORK}/decision-package.md" ] \
+        && post_issue_trace spec-decisions "${WORK}/decision-package.md" DECISIONS_POSTED
+      # 人在终端时：出了决策包直接进答题器，答完自动续跑 spec（防止追问死循环，最多链 3 次）
       if [ -t 0 ] && [ "${SPEC_CHAIN:-0}" -lt 3 ]; then
         export SPEC_CHAIN=$(( ${SPEC_CHAIN:-0} + 1 ))
         cmd_answer "$@"
@@ -166,11 +187,13 @@ cmd_spec() {
         echo "下一步： ./run.sh answer ${ISSUE_REF} 逐题拍板（非交互用： ./run.sh answer ${ISSUE_REF} 'Q1=B'）"
       fi ;;
     *READY*)
-      # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕（幂等：只发一次）
-      if [ -f "${WORK}/contract.md" ] && ! grep -q '^CONTRACT_POSTED=' "$STATE" 2>/dev/null; then
-        gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/contract.md" \
-          && { state_set "CONTRACT_POSTED=1"; echo "契约已回写 issue（验收基线）"; }
-      fi ;;
+      # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕
+      [ -f "${WORK}/contract.md" ] \
+        && post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED
+      echo "契约已就绪，下一步： ./run.sh loop ${ISSUE_REF}" ;;
+    *CLOSE_RECOMMENDED*|*NOT_READY*)
+      post_issue_trace spec-note "${LOGS}/spec-output.md" SPEC_NOTE_POSTED
+      echo "spec 建议已回写 issue，等维护者确认" ;;
   esac
 }
 
@@ -247,6 +270,12 @@ cmd_loop() {
     exit 3
   fi
   cmd_init
+  # 开工留痕：让无人值守的观察者知道队列已启动
+  [ "$(state_last LOOP_STARTED)" != "1" ] && {
+    printf '🤖 流水线自动生成 · 阶段：coding\n\n开始自动交付（目标 %s，最多 %s 轮，合并策略 %s）。后续每轮审查结论与合并结果都会回写本 issue。\n' "$BASE" "$MAX_ROUNDS" "$MERGE_POLICY" \
+      | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
+      && state_set "LOOP_STARTED=1" || true
+  }
   local round=1 pr verdict
   while [ "$round" -le "$MAX_ROUNDS" ]; do
     echo "=== ROUND ${round}: coding ==="
