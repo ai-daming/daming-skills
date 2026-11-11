@@ -251,8 +251,12 @@ cmd_loop() {
     verdict="$(state_last VERDICT)"
     case "$verdict" in
       APPROVE)
+        if [ "$MERGE_POLICY" = "manual" ]; then
+          echo "REVIEW_APPROVED: 审查通过。按 manual 策略等你拍板合并： ./run.sh finish ${ISSUE_REF} ${round}（带红合并 FORCE=1）" >&2
+          exit 6
+        fi
         if cmd_finish loop "$issue" "$round"; then exit 0; fi
-        echo "MERGE_GATE: 门禁未绿或策略为 manual，已挂起；带红合并需用户拍板后 FORCE=1 重跑 finish" >&2
+        echo "MERGE_GATE: 门禁未绿，已挂起；带红合并需用户拍板后 FORCE=1 重跑 finish" >&2
         exit 6 ;;
       CHANGES_REQUIRED)
         gh issue comment "$issue" --repo "$REPO" --body-file "${LOGS}/round${round}-review-feedback.md"
