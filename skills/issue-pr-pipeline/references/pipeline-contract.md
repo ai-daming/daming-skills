@@ -46,6 +46,12 @@ Coding Agent 必须先写失败测试的场景列表（含边界：空值/回读
 需要真机/生产/业务复核的点，合并后由维护者执行后关单。
 ```
 
+## 标签命名空间（扫描器与所有 GitHub 写入统一遵守）
+
+- 流水线产生的标签统一用 `pipeline/` 前缀，一个 issue 同时最多一个：`pipeline/hold`（不适用，原因见评论）、`pipeline/decisions`（待拍板）、`pipeline/queued`（已进队列）。换状态时扫描器换标签，不叠加。
+- 标签名用 ASCII（供脚本匹配），GitHub 标签描述用中文自报家门（如「流水线：不适用，原因见评论」）。
+- 流水线发出的所有 issue 评论统一以 `🤖 流水线自动生成 · 阶段：<spec|review|merge|scan>` 开头，与人工评论一眼可区分。
+
 ## 边界情况处置
 
 ### 预检关闭（CLOSE_RECOMMENDED）
