@@ -427,9 +427,10 @@ cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动
       if [ -n "$q" ] && [ -n "$a" ]; then printf '%s\t%s\n' "$q" "$a" >> "$ovr"; fi
     done
   fi
-  local n id title rec tier ans auto_list auto_cnt ask_cnt unanswered
+  local n id title rec tier ans opt_label auto_lines auto_cnt ask_cnt unanswered
   n="$(jq '.questions | length' "$pkg_json")"
-  local i=0; auto_cnt=0; ask_cnt=0; auto_list=""; unanswered=""
+  local i=0; auto_cnt=0; ask_cnt=0; auto_lines=""; ask_ids=""; unanswered=""
+  # 第一遍：显式答复 + 【默认过】自动通过（列出一行题面，让你知道过了什么）
   while [ "$i" -lt "$n" ]; do
     id="$(jq -r --argjson i "$i" '.questions[$i].id' "$pkg_json")"
     tier="$(jq -r --argjson i "$i" '.questions[$i].tier // "ask"' "$pkg_json")"
@@ -439,25 +440,38 @@ cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动
       echo "${id}: ${ovr_val}（显式答复）" >> "$answers"
     elif [ "$tier" = "auto" ]; then
       echo "${id}: ${rec}（默认通过）" >> "$answers"
-      auto_cnt=$((auto_cnt+1)); auto_list="${auto_list} ${id}=${rec}"
-    else
       title="$(jq -r --argjson i "$i" '.questions[$i].title' "$pkg_json")"
-      printf '\n%s %s 【问你】\n' "$id" "$title"
-      jq -r --argjson i "$i" '.questions[$i].options[] | "  \(.key)) \(.label)"' "$pkg_json"
-      [ -n "$rec" ] && printf '  （倾向 %s，但拿不准）\n' "$rec"
-      printf '你的选择: '
-      ans=""
-      [ -t 0 ] && read -r ans
-      if [ -z "$ans" ]; then
-        if [ -n "$rec" ]; then ans="$rec"; else ans="（未答）"; unanswered="${unanswered} ${id}"; fi
-      fi
-      echo "${id}: ${ans}" >> "$answers"
-      ask_cnt=$((ask_cnt+1))
+      opt_label="$(jq -r --argjson i "$i" --arg k "$rec" '.questions[$i].options[] | select(.key == $k) | .label' "$pkg_json" 2>/dev/null || true)"
+      auto_lines="${auto_lines}  ${id} ${title} → ${rec}）${opt_label}\n"
+      auto_cnt=$((auto_cnt+1))
+    else
+      ask_ids="${ask_ids} ${i}"
     fi
     i=$((i+1))
   done
+  if [ "$auto_cnt" -gt 0 ]; then
+    echo "以下 ${auto_cnt} 题按推荐【默认通过】（完整背景与理由见决策包，随时可重新 answer 推翻）："
+    printf '%b' "$auto_lines"
+    echo
+  fi
+  # 第二遍：【问你】逐题拍板
+  for i in $ask_ids; do
+    id="$(jq -r --argjson i "$i" '.questions[$i].id' "$pkg_json")"
+    title="$(jq -r --argjson i "$i" '.questions[$i].title' "$pkg_json")"
+    rec="$(jq -r --argjson i "$i" '.questions[$i].recommendation // empty' "$pkg_json")"
+    printf '\n%s %s 【问你】\n' "$id" "$title"
+    jq -r --argjson i "$i" '.questions[$i].options[] | "  \(.key)) \(.label)"' "$pkg_json"
+    [ -n "$rec" ] && printf '  （倾向 %s，但拿不准）\n' "$rec"
+    printf '你的选择: '
+    ans=""
+    [ -t 0 ] && read -r ans
+    if [ -z "$ans" ]; then
+      if [ -n "$rec" ]; then ans="$rec"; else ans="（未答）"; unanswered="${unanswered} ${id}"; fi
+    fi
+    echo "${id}: ${ans}" >> "$answers"
+    ask_cnt=$((ask_cnt+1))
+  done
   echo
-  [ "$auto_cnt" -gt 0 ] && echo "【默认过】${auto_cnt} 题（判断过程见决策包，可随时重新 answer 推翻）：${auto_list}"
   echo "答复已保存：${answers}（问你 ${ask_cnt} 题，默认过 ${auto_cnt} 题）"
   sed 's/^/  /' "$answers"
   [ -n "$unanswered" ] && echo "WARN:【问你】档未答复：${unanswered}；spec 仍会停在这些题上" >&2
