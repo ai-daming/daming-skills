@@ -82,6 +82,24 @@ cd <本 skill 目录>
 
 每期状态集中在 `work_dir/issue-<N>/`：`state.env`（PR 号/轮次/verdict）、`decision-package(.answers).md`、`contract.md`、`wt/`、`logs/`（各轮完整输出与反馈，只追加不删除）。
 
+## 磁盘卫生
+
+每期重量级产物（KB 级证据之外的部分）：
+
+| 产物 | 位置 | 量级 |
+|---|---|---|
+| Coding 专属 worktree（含构建产物、依赖） | `work_dir/issue-<N>/wt` | JVM/前端项目每期可达 GB 级 |
+| Review 审查工作树 | 系统临时目录 `pr-analyze-<PR>-*` | 同量级 |
+| 日志/契约/决策包/状态 | `work_dir/issue-<N>/` | KB 级，可长期保留 |
+
+处置：
+
+```bash
+./run.sh cleanup <issue>   # 合并后清理该期重量级产物（无 MERGED 记录时拒绝，FORCE=1 可强制）
+```
+
+或配置 `"cleanup_after_merge": true`（默认 false），合并成功后自动清理；日志与契约始终保留。编排者应在交付完成后（无论是否自动清理）向用户报告磁盘占用情况。
+
 ## Agent 输出契约
 
 | Agent | 最后一行必须是 |

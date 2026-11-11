@@ -26,6 +26,7 @@ WORK_ROOT="$(jq -r .work_dir "$CONFIG")"
 AGENT_CLI="$(jq -r '.agent_cli // "pi"' "$CONFIG")"
 MAX_ROUNDS="$(jq -r '.max_rounds // 3' "$CONFIG")"
 MERGE_POLICY="$(jq -r '.merge_policy // "manual"' "$CONFIG")"
+CLEANUP_AFTER_MERGE="$(jq -r '.cleanup_after_merge // false' "$CONFIG")"
 
 for req in "$MAIN_REPO" "$WORK_ROOT"; do
   [ -d "$req" ] || { echo "ERROR: 目录不存在: $req（检查 config.json）" >&2; exit 1; }
@@ -47,7 +48,7 @@ BRANCH="agent/issue-${issue}"
 mkdir -p "${LOGS}"
 
 state_set() { echo "$@" >> "$STATE"; }
-state_last() { grep -E "^$1=" "$STATE" 2>/dev/null | tail -1 | cut -d= -f2-; }
+state_last() { grep -E "^$1=" "$STATE" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
 
 LOCK_DIR="${WORK}/.lock"
 lock() {
@@ -158,6 +159,9 @@ EOF
   gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/.merged-comment.md"
   state_set "MERGED=${pr}"
   echo "MERGED pr=${pr}"
+  if [ "$CLEANUP_AFTER_MERGE" = "true" ]; then
+    cmd_cleanup
+  fi
 }
 
 cmd_loop() {
@@ -192,6 +196,32 @@ cmd_loop() {
   exit 5
 }
 
+cmd_cleanup() {
+  # 清理该 issue 的重量级产物：Coding worktree + Review 的 /tmp 审查工作树
+  # 保留轻量证据：logs/、contract.md、decision-package*、state.env
+  local merged; merged="$(state_last MERGED)"
+  local force="${FORCE:-0}"
+  if [ -z "$merged" ] && [ "$force" != "1" ]; then
+    echo "ERROR: state 无 MERGED 记录，拒绝清理（防误删未合并/进行中的工作）；确认放弃用 FORCE=1 ./run.sh cleanup ${issue}" >&2
+    exit 2
+  fi
+  local wt="${WORK}/wt"
+  if [ -d "$wt" ]; then
+    git -C "$MAIN_REPO" worktree remove "$wt" 2>/dev/null || rm -rf "$wt"
+    echo "REMOVED worktree ${wt}"
+  fi
+  local pr; pr="$(state_last PR)"
+  if [ -n "$pr" ]; then
+    local tmpdirs
+    tmpdirs=$(find /tmp -maxdepth 1 -type d -name "pr-analyze-${pr}-*" 2>/dev/null || true)
+    if [ -n "$tmpdirs" ]; then
+      echo "$tmpdirs" | while IFS= read -r d; do rm -rf "$d"; echo "REMOVED $d"; done
+    fi
+  fi
+  rm -f "${WORK}/.coding-fix-tpl.md" "${WORK}/.merged-comment.md"
+  echo "KEPT 证据文件：logs/ contract.md decision-package*.md state.env（体积小，可长期保留）"
+}
+
 cmd_status() {
   echo "issue=${issue} repo=${REPO} base=${BASE} branch=${BRANCH}"
   echo "work=${WORK}"
@@ -203,7 +233,7 @@ cmd_status() {
 }
 
 # ---------- 入口 ----------
-stage="${1:?usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|status> <issue> [round]}"
+stage="${1:?usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|cleanup|status> <issue> [round]}"
 lock
 case "$stage" in
   spec)   cmd_spec ;;
@@ -212,6 +242,7 @@ case "$stage" in
   review) cmd_review "$@" ;;
   finish) cmd_finish "$@" ;;
   loop)   cmd_loop ;;
+  cleanup) cmd_cleanup ;;
   status) cmd_status ;;
-  *) echo "usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|status> <issue> [round]"; exit 1 ;;
+  *) echo "usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|cleanup|status> <issue> [round]"; exit 1 ;;
 esac
