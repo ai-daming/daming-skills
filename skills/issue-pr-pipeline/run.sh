@@ -301,36 +301,54 @@ cmd_cleanup() {
   echo "KEPT 证据文件：logs/ contract.md decision-package*.md state.env（体积小，可长期保留）"
 }
 
-cmd_answer() { # 交互答题：逐题选/回车=推荐；或非交互 ./run.sh answer <issue> "Q1=B;Q2=A"
+cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动通过；非交互 ./run.sh answer <issue> "Q1=B;Q2=A"（显式答复可推翻默认）
   local answers="${WORK}/decision-package.answers.md"
   local pkg_json="${WORK}/decision-package.json"
   [ -f "$pkg_json" ] || { echo "ERROR: 缺少 ${pkg_json}；先跑 spec 出决策包（旧版决策包无 json，可手写 ${answers}，格式 Q1: B）" >&2; exit 2; }
   : > "$answers"
   local inline="${3:-}"
+  local ovr="${WORK}/.answer-overrides"; : > "$ovr"
   if [ -n "$inline" ]; then
     printf '%s\n' "$inline" | tr ';' '\n' | while IFS= read -r pair; do
-      local q a; q="${pair%%=*}"; a="${pair#*=}"
-      if [ -n "${q// /}" ] && [ -n "$a" ]; then echo "${q}: ${a}" >> "$answers"; fi
-    done
-  else
-    local n; n="$(jq '.questions | length' "$pkg_json")"
-    local i=0 id title rec ans
-    echo "共 ${n} 题。回车 = 采纳推荐；也可直接输入选项键或写下你的意见。"
-    while [ "$i" -lt "$n" ]; do
-      id="$(jq -r --argjson i "$i" '.questions[$i].id' "$pkg_json")"
-      title="$(jq -r --argjson i "$i" '.questions[$i].title' "$pkg_json")"
-      rec="$(jq -r --argjson i "$i" '.questions[$i].recommendation // empty' "$pkg_json")"
-      printf '\n%s %s\n' "$id" "$title"
-      jq -r --argjson i "$i" '.questions[$i].options[] | "  \(.key)) \(.label)"' "$pkg_json"
-      [ -n "$rec" ] && printf '  （推荐 %s）\n' "$rec"
-      printf '你的选择: '
-      read -r ans
-      [ -z "$ans" ] && ans="${rec:-（未答）}"
-      echo "${id}: ${ans}" >> "$answers"
-      i=$((i+1))
+      local q a; q="${pair%%=*}"; a="${pair#*=}"; q="${q// /}"
+      if [ -n "$q" ] && [ -n "$a" ]; then printf '%s\t%s\n' "$q" "$a" >> "$ovr"; fi
     done
   fi
-  echo; echo "答复已保存：${answers}"; sed 's/^/  /' "$answers"
+  local n id title rec tier ans auto_list auto_cnt ask_cnt unanswered
+  n="$(jq '.questions | length' "$pkg_json")"
+  local i=0; auto_cnt=0; ask_cnt=0; auto_list=""; unanswered=""
+  while [ "$i" -lt "$n" ]; do
+    id="$(jq -r --argjson i "$i" '.questions[$i].id' "$pkg_json")"
+    tier="$(jq -r --argjson i "$i" '.questions[$i].tier // "ask"' "$pkg_json")"
+    rec="$(jq -r --argjson i "$i" '.questions[$i].recommendation // empty' "$pkg_json")"
+    local ovr_val; ovr_val="$(awk -F'\t' -v q="$id" '$1==q{print $2; exit}' "$ovr")"
+    if [ -n "$ovr_val" ]; then
+      echo "${id}: ${ovr_val}（显式答复）" >> "$answers"
+    elif [ "$tier" = "auto" ]; then
+      echo "${id}: ${rec}（默认通过）" >> "$answers"
+      auto_cnt=$((auto_cnt+1)); auto_list="${auto_list} ${id}=${rec}"
+    else
+      title="$(jq -r --argjson i "$i" '.questions[$i].title' "$pkg_json")"
+      printf '\n%s %s 【问你】\n' "$id" "$title"
+      jq -r --argjson i "$i" '.questions[$i].options[] | "  \(.key)) \(.label)"' "$pkg_json"
+      [ -n "$rec" ] && printf '  （倾向 %s，但拿不准）\n' "$rec"
+      printf '你的选择: '
+      ans=""
+      [ -t 0 ] && read -r ans
+      if [ -z "$ans" ]; then
+        if [ -n "$rec" ]; then ans="$rec"; else ans="（未答）"; unanswered="${unanswered} ${id}"; fi
+      fi
+      echo "${id}: ${ans}" >> "$answers"
+      ask_cnt=$((ask_cnt+1))
+    fi
+    i=$((i+1))
+  done
+  echo
+  [ "$auto_cnt" -gt 0 ] && echo "【默认过】${auto_cnt} 题（判断过程见决策包，可随时重新 answer 推翻）：${auto_list}"
+  echo "答复已保存：${answers}（问你 ${ask_cnt} 题，默认过 ${auto_cnt} 题）"
+  sed 's/^/  /' "$answers"
+  [ -n "$unanswered" ] && echo "WARN:【问你】档未答复：${unanswered}；spec 仍会停在这些题上" >&2
+  rm -f "$ovr"
   if [ -t 0 ]; then
     printf '\n现在继续生成实施契约？[Y/n] '
     local go; read -r go
