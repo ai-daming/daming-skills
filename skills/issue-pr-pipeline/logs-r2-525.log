@@ -1,0 +1,160 @@
+
+[12:48:27] 🔧 bash
+  command: gh pr view 526 --repo ai-daming/mamamate --json number,state,isDraft,baseRefOid,headRefOid,headRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,commits --jq '{headRefOid, baseRefOid, state, isDraft, mergeable, mergeStateStatus, reviewDecision, commit_count: (.commits|length), last_commit: (.commits[-1].oid), checks: [.statusCheckRollup[] | {name, workflowName, status, conclusion}]}' 2>&1; date -u +"%Y-%m-%dT%H:%M:%SZ"
+  timeout: 60
+
+[12:48:27] 🔧 bash
+  command: echo "=== new PR reviews since 04:31Z ==="; gh api "repos/ai-daming/mamamate/pulls/526/reviews" --paginate --jq '.[] | {id, user: .user.login, state, submitted_at}' 2>&1; echo "=== new PR/issue comments since 04:31Z ==="; gh api "repos/ai-daming/mamamate/issues/526/comments" --paginate --jq '.[] | {id, user: .user.login, created_at}' 2>&1; echo "=== issue 525 comment ids ==="; gh api "repos/ai-daming/mamamate/issues/525/comments" --paginate --jq '.[] | {id, created_at}' 2>&1; echo "=== workflow disabled? ==="; gh api "repos/ai-daming/mamamate/actions/workflows" --jq '.workflows[] | {name, state}' 2>&1
+  timeout: 120
+
+Head 未漂移（`de2c467d`），workflows 已确认被手动禁用。有一条 04:38 新评论需要读。
+[12:48:39] 🔧 bash
+  command: gh api "repos/ai-daming/mamamate/issues/526/comments" --paginate --jq '.[] | "AUTHOR: \(.user.login) AT \(.created_at)\n\(.body)\n---"' 2>&1
+  timeout: 60
+
+评论是我上一轮报告的镜像回传，无新事实。做复审预检：worktree 完整性 + 熔断预检。
+[12:48:57] 🔧 bash
+  command: REPO=/tmp/pr-analyze-526-0y2pPSws/repo
+cd "$REPO"
+echo "HEAD: $(git rev-parse HEAD)"; echo "STATUS:"; git status --porcelain | head -5; [ -z "$(git status --porcelain)" ] && echo "worktree CLEAN"; echo "merge-base: $(git merge-base 5585c54448acf7d7f8f8264d54ccf1f6fc8bf6fe de2c467d877ec54fe82051626274e55f05ec42e9)"
+grep -c "console.log" apps/provider-web/src/pages/provider/ProviderMomDetailPage.test.tsx
+  timeout: 30
+
+[12:49:04] 🔧 bash
+  command: gh pr view 526 --repo ai-daming/mamamate --json headRefOid,baseRefOid,state,isDraft,mergeable,mergeStateStatus --jq '{headRefOid, baseRefOid, state, isDraft, mergeable, mergeStateStatus}' 2>&1; date -u +"%Y-%m-%dT%H:%M:%SZ"
+  timeout: 60
+
+Head 最终回读仍未漂移。写复审报告。
+[12:49:45] 🔧 write
+  content: # PR #526 分析报告（复审 R2：门禁语义更新）
+
+> **PR**: ai-daming/mamamate#526 — https://github.com/ai-daming/mamamate/pull/526
+> **审查基线**: `de2c467d877ec54fe82051626274e55f05ec42e9` against `5585c54448acf7d7f8f8264d54ccf1f6fc8bf6fe`
+> **身份 / 模式**: Review Agent / re-review（head 未变，门禁语义变更触发的结论刷新）
+> **本轮触发**: 编排器更新审查协议——绿门唯一定义改为本地验证；GitHub 测试工作流已被维护者禁用（账单原因），checks 不构成合并门。已重新调用 skill 并刷新 live facts。
+> **前轮报告**: `/Users/yinwm/projs/pr-reports/ai-daming-mamamate/pr-526-20261111-123132.md`（first-review，同一 head，全部技术证据沿用其 B1-B7）
+> **源码**: matching-local-worktree — `/tmp/pr-analyze-526-0y2pPSws/repo`（detached @ `de2c467d`，主检出未动；本轮复核 HEAD/merge-base 一致、worktree CLEAN）
+> **分析时间**: 2026-11-11 12:49 (UTC+8) / 04:49Z
+
+---
+
+# A. 决策简报
+
+## 结论
+
+**建议动作**: APPROVE
+
+代码在上一轮就已经全部验过：精确 head `de2c467d` 上，provider-web 全量测试 233 个、浏览器模式用例 10 个、build、eslint、覆盖率全部跑绿，与 PR 声明逐字一致，唯一的发现是 3 行 DEBUG console.log（信息级，不阻塞）。上一轮给 WAIT 的唯一原因——CI 上 4 个红灯——现在不成立了：维护者已因账单原因手动禁用了全部测试工作流（我通过 API 确认 provider-web-tests、server-tests 均为 `disabled_manually`），编排器明确绿门以本地验证为准。本地验证是绿的、head 没漂移、无阻断发现，按新门禁语义满足放行条件。
+
+- **当前 head**: `de2c467d`，两轮回读（04:48:29Z、04:49:05Z）均未变化
+- **GitHub 门禁**: 非 draft、MERGEABLE；checks 面板上的 4 个 FAILURE 是禁用前最后一批运行（04:23:47Z 完成）的陈旧残留，工作流状态 `disabled_manually` 已核实，不构成合并门（归因不变：基础设施/0 步骤空壳失败，见前轮报告 B6）
+- **架构准入**: 不适用（同前轮：纯前端错误展示层 + nginx 缓存头，不触发 impl-gate；与 §4.3 / ADR-E-003-002 无交集）
+- **熔断**: NORMAL——两轮均无契约锚定不变量违反（INV-1/INV-2 台账见前轮报告 B3，本轮无新违反、无闭合声明待核）
+- **范围审计**: NOT_REQUIRED（同前轮：无状态/生命周期/并发/持久化类变更）
+- **已完成动作**: 分析、代码审查（前轮 5 pass + 本轮 delta 零）、本地验证（前轮完成于同一 head：vitest 233 绿 / browser 10 绿 / build 过 / lint 仅基线既有错误 / 覆盖率 90.87%+81.35% 与声明一致）；未做任何 GitHub mutation
+
+## 上轮问题关闭情况
+
+前轮唯一发现 F1（DEBUG console.log，INFORMATIONAL）仍开放——见 B3 账本。它不阻塞任何关口，可随后续任意提交顺带清理。
+
+## 下一步
+
+- **Blocking**: 无
+- **Non-blocking**: F1（3 行调试 console.log 清理）
+- **推荐动作**: 编排器可执行 approve/merge 流程（绑定 `de2c467d`）。M1-M4（nginx 实际部署 + 安卓/iOS 真机验证 + 业务闭环）按契约 §6 留给维护者发布流程验收：不阻塞合并，阻塞 issue #525 关闭——PR 正文为「关联」措辞、closing references 为空，合并不会误关 issue，验收语境保留。
+
+---
+
+# B. 技术证据附录
+
+## B1. PR、基线与证据边界
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| PR 状态 / draft | OPEN / 非 draft | live readback 04:49:05Z |
+| Base SHA | `5585c54448acf7d7f8f8264d54ccf1f6fc8bf6fe` | 未变 |
+| Head SHA | `de2c467d877ec54fe82051626274e55f05ec42e9` | 与前轮冻结基线相同；commits 仍为 2，无新提交 |
+| 最终 head 回读 | 未变化 | 04:48:29Z 与 04:49:05Z 两次 `gh pr view` |
+| Mergeable / merge state | MERGEABLE / UNSTABLE | UNSTABLE 仅由已禁用工作流的陈旧 FAILURE 造成，非合并门 |
+| Checks | 4 FAILURE（陈旧，04:23:47Z 完成于禁用前） | `gh api actions/workflows`：provider-web-tests 与 server-tests 均为 `disabled_manually` |
+| Review / 新评论 | 无新正式 review；04:38:35Z 的 PR 评论为编排器对前轮报告的镜像回传（内容即我前轮结论），无新事实、无新维护者指令 | `pulls/526/reviews` 仍为空；issue #526 comments 全量比对 |
+| Source / merge base / diff check | worktree HEAD = `de2c467d`，merge-base = `5585c544`，`git status --porcelain` 空（CLEAN） | 本轮复核 |
+
+**失败或降级步骤**: 无（本轮无新降级；前轮的 CI 日志 404 降级与归因沿用前轮报告 B6）。
+
+**未验证边界**: 同前轮——真机微信行为（M2/M3）与线上 nginx 实际响应头（M1）留给维护者发布流程。
+
+## B2. 意图、架构与关联工作
+
+同前轮报告 B2（head 未变、无 delta）：意图与交付逐项吻合契约 Q1=B + D1-D6；impl-gate 不触发；无重复 PR。本轮新增核对：04:38 PR 评论为报告镜像，无需求变更，契约无需重读重判。
+
+## B3. Closure ledger 与不变量
+
+| Finding | 人话不变量 / ID | 契约锚点 | 原复现 | 声称修复 commit | 当前 exact-head 结果 | 状态 |
+|---|---|---|---|---|---|---|
+| F1 DEBUG console.log ×3 | 代码卫生（无 AC 锚点，信息级） | 仓库通用规范 | `grep -n "console.log" ProviderMomDetailPage.test.tsx`（前轮） | 无 | 本轮同 grep 仍命中 3 行（:386/:483/:500） | OPEN（不阻塞） |
+
+| Invariant ID | 人话命题 | 事实所有者 | 权威成员 / 等价类 | 历史违反点 | 熔断 | 范围审计 |
+|---|---|---|---|---|---|---|
+| INV-1 | 点名校验失败必须「阻止提交 + toast + 字段高亮 + 滚动定位 + 持久横幅」，横幅下次提交先清除 | 前端页面状态 | 4+1 入口（前轮 A-1~A-8 全 pass） | 无 | NORMAL | NOT_REQUIRED |
+| INV-2 | 入口 no-cache、/assets/ 长缓存、MP_verify no-store 不回退 | nginx conf | 3 类 location | 无 | NORMAL | NOT_REQUIRED |
+
+### 熔断预检（复审必做）
+
+- **分组**: 按 INV-1/INV-2 两个稳定不变量归并（前轮即按此建账）。
+- **违反时间线**: 无——两轮审查均未发现任何契约锚定违反；处置方（Coding Agent）未对 F1 做闭合声明，无 EVIDENCE_TRIPPED 触发面；无第二个独立可达违反点，无 DESIGN_TRIPPED 触发面。
+- **状态**: NORMAL（显式判定，非默认）。
+- **范围审计完整性**: NOT_REQUIRED（无状态机写入路径；依据前轮 B4，本轮无 delta）。
+
+## B4. 完整性覆盖证据
+
+同前轮报告 B4（A-1~A-8 入口矩阵全 pass，量小已内联于前轮）；本轮 delta 为零，无需扩展。完整性结论：NOT_REQUIRED。
+
+## B5. Finding 技术证据
+
+### F1（沿用，仍开放）
+
+- **位置**: `apps/provider-web/src/pages/provider/ProviderMomDetailPage.test.tsx:386`、`:483`、`:500`
+- **Current-head reproduction**: 本轮 `grep -c "console.log"` = 3（同 head 复核命中）
+- **Severity reason**: 无行为/断言/门禁影响 → INFORMATIONAL，不阻塞 APPROVE
+- **复审新增说明**: 非本轮新增，前轮已报，处置方未声称修复，账本如实保留 OPEN
+
+## B6. 验证与 evidence oracle
+
+本地验证证据与前轮同源（同一精确 head、worktree 本轮复核 CLEAN）：
+
+| 命令 | 结果 | 归因 |
+|---|---|---|
+| `npx vitest run`（provider-web jsdom 全量） | 29 文件 / 233 用例全绿（04:27Z，@ `de2c467d`） | — |
+| `npx vitest run --config vitest.browser.config.ts`（2 个生命周期文件） | 10 用例全绿（04:27Z） | — |
+| `npm run build` | 通过（04:28Z） | — |
+| `npx eslint .` | 4 错误均为基线既有（未触碰文件） | 基线既有 |
+| coverage（两页面 v8，include 探测） | Create 90.87% / Detail 81.35%，与 PR 声明一致；85% 差距为未改动既有代码，声明已如实报告 | — |
+
+按 skill 规则不重复未变更 head 的成功运行来追加收据。
+
+### Checks 归因更新（门禁语义变更后）
+
+| Check | 状态 | 归因 | 本轮新增证据 |
+|---|---|---|---|
+| 4 × FAILURE（provider-web-tests / server-tests 各 job） | 陈旧（禁用前最后运行，04:23:47Z 完成） | 基础设施（0 步骤空壳失败，前轮 B6 三源交叉） | `gh api repos/.../actions/workflows` 确认 provider-web-tests、server-tests 均 `disabled_manually`，与编排器「维护者因账单禁用、checks 不构成合并门」的口径互证；按新协议，基础设施类红灯不改变 APPROVE |
+
+### Durable reproduction index
+
+无新增非平凡复现（沿用前轮 command/result 行）。
+
+## B7. 兼容性、范围与奥卡姆
+
+同前轮报告 B7：范围 CLEAN，概念最小（3 项新增概念均有生产消费者与删除后行为差异），义务台账不变——M1-M4 属 release 关口（维护者承接、契约 §6 明示），CHANGELOG 随 release 维护，均不阻塞合并；PR 无 auto-close 关联（closing references 空），不会误关 issue #525。
+
+---
+
+## 复审批注：为何从 WAIT 转 APPROVE
+
+前轮 WAIT 的唯一依据是「绿门不满足：4 个 check 红」。本轮两个事实变化：① 维护者已禁用全部测试工作流（`disabled_manually` 实证），checks 退出合并门，4 个 FAILURE 定性为禁用前基础设施故障的陈旧残留；② 编排器以协议明文将绿门唯一定义为精确 head 的本地验证。本地验证已于前轮在同一 head 完成且全绿，head 两轮回读未漂移，无阻断发现，无追加决策题。APPROVE 条件齐备。
+
+*报告由大铭的 `/pr-analyze` v0.14.0 生成。Copyright © 大铭 · [github.com/ai-daming](https://github.com/ai-daming)。*
+
+  path: /Users/yinwm/projs/pr-reports/ai-daming-mamamate/pr-526-20261111-124920.md
+
+**身份：Review Agent**结论：APPROVE。上一轮卡住的理由已经消失——那 4 个红灯来自已被禁用的测试工作流（我通过 API 确认 provider-web-tests 和 server-tests 都是 `disabled_manually`），按新门禁语义不算数。代码本身两轮都没问题：精确 head `de2c467d` 上我本地跑过全量测试 233 个、浏览器用例 10 个、build、eslint、覆盖率，全绿且与 PR 声明一致；head 未漂移，无阻断发现。唯一的遗留是详情页测试里 3 行 DEBUG console.log（信息级，不阻塞，建议后续提交顺手删掉）。M1-M4（nginx 真机部署验证）按契约留给维护者发布流程，不阻塞合并；PR 是「关联」措辞，合并不会误关 issue #525。复审报告：`/Users/yinwm/projs/pr-reports/ai-daming-mamamate/pr-526-20261111-124920.md`（前轮完整技术证据：`/Users/yinwm/projs/pr-reports/ai-daming-mamamate/pr-526-20261111-123132.md`）PIPELINE_VERDICT: APPROVEREVIEW round 2 => PIPELINE_VERDICT: APPROVE

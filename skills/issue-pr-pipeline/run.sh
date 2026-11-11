@@ -152,6 +152,36 @@ expect_line() { # $1=file $2=pattern
 }
 
 # ---------- 阶段 ----------
+PIPELINE_LABELS="pipeline/hold pipeline/decisions pipeline/queued pipeline/blocked pipeline/merged"
+
+ensure_pipeline_label() { # $1=标签名（不存在则建，带中文描述）
+  gh label view "$1" --repo "$REPO" >/dev/null 2>&1 && return 0
+  local desc color
+  case "$1" in
+    pipeline/hold) desc="流水线：不适用自动交付，原因见评论"; color=8b8680 ;;
+    pipeline/decisions) desc="流水线：待拍板，决策包见评论"; color=d93f0b ;;
+    pipeline/queued) desc="流水线：开发队列进行中"; color=1d76db ;;
+    pipeline/blocked) desc="流水线：中途受阻，需人工解锁，现场快照见评论"; color=b60205 ;;
+    pipeline/merged) desc="流水线：已合并，待维护者验收后关单"; color=0e8a16 ;;
+    *) return 0 ;;
+  esac
+  gh label create "$1" --repo "$REPO" --description "$desc" --color "$color" >/dev/null 2>&1 || true
+}
+
+set_pipeline_label() { # $1=目标标签（空串=清除）；一个 issue 同时只保留一个 pipeline/*
+  local cur l
+  cur="$(gh issue view "$issue" --repo "$REPO" --json labels --jq '[.labels[].name] | map(select(startswith("pipeline/"))) | .[]' 2>/dev/null || true)"
+  for l in $cur; do
+    [ "$l" = "$1" ] && continue
+    gh issue edit "$issue" --repo "$REPO" --remove-label "$l" >/dev/null 2>&1 || true
+  done
+  if [ -n "$1" ]; then
+    ensure_pipeline_label "$1"
+    gh issue edit "$issue" --repo "$REPO" --add-label "$1" >/dev/null 2>&1 \
+      || echo "WARN: 标签 ${1} 设置失败（网络？）" >&2
+  fi
+}
+
 file_hash() { [ -f "$1" ] && shasum "$1" | awk '{print $1}' || echo missing; }
 
 # 回写 issue：带 🤖 徽标，幂等（内容哈希变了才重发）；回写失败只警告不中断
@@ -179,6 +209,7 @@ cmd_spec() {
     *DECISIONS_REQUIRED*)
       [ -f "${WORK}/decision-package.md" ] \
         && post_issue_trace spec-decisions "${WORK}/decision-package.md" DECISIONS_POSTED
+      set_pipeline_label pipeline/decisions
       # 人在终端时：出了决策包直接进答题器，答完自动续跑 spec（防止追问死循环，最多链 3 次）
       if [ -t 0 ] && [ "${SPEC_CHAIN:-0}" -lt 3 ]; then
         export SPEC_CHAIN=$(( ${SPEC_CHAIN:-0} + 1 ))
@@ -190,9 +221,11 @@ cmd_spec() {
       # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕
       [ -f "${WORK}/contract.md" ] \
         && post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED
+      set_pipeline_label ""
       echo "契约已就绪，下一步： ./run.sh loop ${ISSUE_REF}" ;;
     *CLOSE_RECOMMENDED*|*NOT_READY*)
       post_issue_trace spec-note "${LOGS}/spec-output.md" SPEC_NOTE_POSTED
+      set_pipeline_label pipeline/hold
       echo "spec 建议已回写 issue，等维护者确认" ;;
   esac
 }
@@ -256,6 +289,7 @@ cmd_finish() {
 PR #${pr} 已通过审查（Review Agent，pr-analyze 协议，第 ${round} 轮）并合并到 ${BASE}。绿门 = Review Agent 在精确 head 上的本地验证（测试/build/lint）。GitHub Actions 测试工作流已于 2026-11-11 由维护者禁用（账单原因），checks 不构成合并门；该运维决策记录于此。实施契约见本 issue 评论区。需要真机/生产复核的验收点请维护者执行后关闭本单。
 EOF
   gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/.merged-comment.md"
+  set_pipeline_label pipeline/merged
   state_set "MERGED=${pr}"
   echo "MERGED pr=${pr}"
   if [ "$CLEANUP_AFTER_MERGE" = "true" ]; then
@@ -271,7 +305,8 @@ cmd_loop() {
     exit 3
   fi
   cmd_init
-  # 开工留痕：让无人值守的观察者知道队列已启动
+  # 开工留痕：标签 + 评论，让无人值守的观察者知道队列已启动
+  set_pipeline_label pipeline/queued
   [ "$(state_last LOOP_STARTED)" != "1" ] && {
     printf '🤖 流水线自动生成 · 阶段：coding\n\n开始自动交付（目标 %s，最多 %s 轮，合并策略 %s）。后续每轮审查结论与合并结果都会回写本 issue。\n' "$BASE" "$MAX_ROUNDS" "$MERGE_POLICY" \
       | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
@@ -284,6 +319,7 @@ cmd_loop() {
     pr="$(state_last PR)"
     [ -n "$pr" ] || {
       echo "NO_PR: coding 未产出 PR，停机等人工" >&2
+      set_pipeline_label pipeline/blocked
       { printf '🤖 流水线自动生成 · 阶段：coding\n\n第 %s 轮 Coding Agent 未产出 PR（BLOCKED 或输出契约缺失），已停机等人工。本地日志：issue-%s/logs/round%s-coding-output.md\n' "$round" "$issue" "$round" \
         | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
         || echo "WARN: issue 回写失败，日志仅在本地" >&2; }
@@ -294,6 +330,7 @@ cmd_loop() {
     case "$verdict" in
       APPROVE)
         if [ "$MERGE_POLICY" = "manual" ]; then
+          set_pipeline_label pipeline/blocked
           { printf '🤖 流水线自动生成 · 阶段：review\n\n审查通过（第 %s 轮，pr-analyze 协议）。按 manual 策略等维护者合并：`./run.sh finish %s %s`（带红合并 FORCE=1）。报告：issue-%s/logs/round%s-review-output.md\n' "$round" "$ISSUE_REF" "$round" "$issue" "$round" \
             | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
             || echo "WARN: PR 回写失败，结论仅在本地" >&2; }
@@ -301,6 +338,7 @@ cmd_loop() {
           exit 6
         fi
         if cmd_finish loop "$issue" "$round"; then exit 0; fi
+        set_pipeline_label pipeline/blocked
         { printf '🤖 流水线自动生成 · 阶段：merge\n\n审查通过但门禁未绿，已挂起；带红合并需维护者拍板后 FORCE=1 ./run.sh finish %s %s。归因见审查报告。\n' "$ISSUE_REF" "$round" \
           | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
           || echo "WARN: PR 回写失败" >&2; }
@@ -313,13 +351,15 @@ cmd_loop() {
         echo "round ${round} 打回，反馈已评论 issue，进入 round $((round+1))"
         round=$((round+1)) ;;
       *)
+        set_pipeline_label pipeline/blocked
         { printf '🤖 流水线自动生成 · 阶段：review\n\n' | cat - "${LOGS}/round${round}-review-output.md" \
           | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
           || echo "WARN: PR 回写失败，报告仅在本地 ${LOGS}/round${round}-review-output.md" >&2; }
-        echo "verdict=${verdict}；停机等人工（报告已回写 PR）" >&2
+        echo "verdict=${verdict}；停机等人工（报告已回写 PR，标签 pipeline/blocked）" >&2
         exit 4 ;;
     esac
   done
+  set_pipeline_label pipeline/blocked
   { printf '🤖 流水线自动生成 · 阶段：review\n\n%s 轮内未获 APPROVE，按安全阀停机等人工；各轮反馈见本 issue 评论区与本地 logs。\n' "$MAX_ROUNDS" \
     | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
     || echo "WARN: issue 回写失败" >&2; }
