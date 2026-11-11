@@ -77,10 +77,12 @@ cd <本 skill 目录>
 | Agent | 工作目录 | 说明 |
 |---|---|---|
 | Spec | `main_repo_path`（目标项目本地主检出） | 只读纪律；在此目录是为了自动加载项目的 agent 指引（AGENTS.md 等） |
-| Coding | `work_dir/issue-<N>/wt`（专属 git worktree，分支 `agent/issue-<N>`） | 与你的主检出完全隔离；worktree 是全量检出，项目指引同样自动加载 |
+| Coding | `work_dir/<project>/issue-<N>/wt`（专属 git worktree，分支 `agent/issue-<N>`） | 与你的主检出完全隔离；worktree 是全量检出，项目指引同样自动加载 |
 | Review | `main_repo_path` + 按协议在系统临时目录建独立 detached worktree | pr-analyze 自管审查工作树 |
 
-每期状态集中在 `work_dir/issue-<N>/`：`state.env`（PR 号/轮次/verdict）、`decision-package(.answers).md`、`contract.md`、`wt/`、`logs/`（各轮完整输出与反馈，只追加不删除）。
+每期状态集中在 `work_dir/<project>/issue-<N>/`：`state.env`（PR 号/轮次/verdict）、`decision-package(.answers).md`、`contract.md`、`wt/`、`logs/`（各轮完整输出与反馈，只追加不删除）。
+
+`<project>` 分组目录避免多项目 issue 同号冲突：优先取 config 的 `project` 字段，缺省从 `repo` 名推导（`owner/name` → `name`）。
 
 ## 磁盘卫生
 
@@ -88,7 +90,7 @@ cd <本 skill 目录>
 
 | 产物 | 位置 | 量级 |
 |---|---|---|
-| Coding 专属 worktree（含构建产物、依赖） | `work_dir/issue-<N>/wt` | JVM/前端项目每期可达 GB 级 |
+| Coding 专属 worktree（含构建产物、依赖） | `work_dir/<project>/issue-<N>/wt` | JVM/前端项目每期可达 GB 级 |
 | Review 审查工作树 | 系统临时目录 `pr-analyze-<PR>-*` | 同量级 |
 | 日志/契约/决策包/状态 | `work_dir/issue-<N>/` | KB 级，可长期保留 |
 

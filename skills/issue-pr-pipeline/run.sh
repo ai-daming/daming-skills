@@ -23,6 +23,9 @@ REPO="$(jq -r .repo "$CONFIG")"
 BASE="$(jq -r .base_branch "$CONFIG")"
 MAIN_REPO="$(jq -r .main_repo_path "$CONFIG")"
 WORK_ROOT="$(jq -r .work_dir "$CONFIG")"
+# 项目分组目录：优先 config 的 project，缺省取 repo 名（owner/name → name），避免多项目 issue 号冲突；仅保留 ASCII 安全字符
+PROJECT="$(jq -r '.project // (.repo | split("/")[-1] // .repo)' "$CONFIG" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/-\{2,\}/-/g' -e 's/^-*//' -e 's/-*$//')"
+[ -n "$PROJECT" ] || PROJECT="project"
 AGENT_CLI="$(jq -r '.agent_cli // "pi"' "$CONFIG")"
 MAX_ROUNDS="$(jq -r '.max_rounds // 3' "$CONFIG")"
 MERGE_POLICY="$(jq -r '.merge_policy // "manual"' "$CONFIG")"
@@ -41,7 +44,7 @@ done
 
 # ---------- 每期状态 ----------
 issue="${2:?usage: run.sh <stage> <issue> [round]}"
-WORK="${WORK_ROOT}/issue-${issue}"
+WORK="${WORK_ROOT}/${PROJECT}/issue-${issue}"
 LOGS="${WORK}/logs"
 STATE="${WORK}/state.env"
 BRANCH="agent/issue-${issue}"
