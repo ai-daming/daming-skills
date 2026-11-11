@@ -120,10 +120,26 @@ render_prompt() { # $1=template $2=dest  占位符来自当前上下文
       "$1" > "$2"
 }
 
+stream_filter() { # 从 JSONL 事件流中吐人读进度：工具调用 + 正文流式输出
+  while IFS= read -r line; do
+    local t; t="$(printf '%s' "$line" | jq -r '.type // empty' 2>/dev/null || true)"
+    case "$t" in
+      tool_execution_start)
+        printf '[%s] 🔧 %s\n' "$(date +%H:%M:%S)" \
+          "$(printf '%s' "$line" | jq -r '.toolName as $n | (.args // {}) | to_entries | map(.value|tostring) | join(" ") | $n + ": " + .' 2>/dev/null | tr '\n' ' ' | cut -c1-140)" ;;
+      message_update)
+        printf '%s' "$(printf '%s' "$line" | jq -r 'select(.assistantMessageEvent.type == "text_delta") | .assistantMessageEvent.delta // empty' 2>/dev/null || true)" ;;
+    esac
+  done
+}
+
 run_agent() { # $1=template $2=session $3=cwd $4=log
   local prompt="${WORK}/$(basename "$4" .md)-prompt.md"
   render_prompt "$1" "$prompt"
-  ( cd "$3" && "$AGENT_CLI" --print --session-id "mm${issue}-${2}" "$(cat "$prompt")" ) | tee -a "$4"
+  local evlog="${4}.events.jsonl"
+  ( cd "$3" && "$AGENT_CLI" --mode json --session-id "mm${issue}-$2" "$(cat "$prompt")" ) | tee -a "$evlog" | stream_filter || true
+  # 从事件流提取全部助手正文（含末尾输出契约行）写入日志
+  jq -r 'select(.type == "message_end" and .message.role == "assistant") | .message.content[]? | select(.type == "text") | .text, ""' "$evlog" 2>/dev/null >> "$4" || true
 }
 
 expect_line() { # $1=file $2=pattern
