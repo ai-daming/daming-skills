@@ -1,6 +1,7 @@
 {
   "work_dir": "/absolute/path/to/pipeline-workdir",
   "agent_cli": "pi",
+  "coding_model": "",
   "max_rounds": 3,
   "merge_policy": "auto-if-green",
   "cleanup_after_merge": false,

@@ -39,6 +39,7 @@ AGENT_CLI="$(jq -r '.agent_cli // "pi"' "$CONFIG")"
 MAX_ROUNDS="$(jq -r '.max_rounds // 3' "$CONFIG")"
 MERGE_POLICY="$(jq -r '.merge_policy // "manual"' "$CONFIG")"
 CLEANUP_AFTER_MERGE="$(jq -r '.cleanup_after_merge // false' "$CONFIG")"
+CODING_MODEL="$(jq -r '.coding_model // empty' "$CONFIG")"
 
 GRILL_MD="${SKILLS_DIR}/grill/SKILL.md"
 PR_ANALYZE_MD="${SKILLS_DIR}/pr-analyze/SKILL.md"
@@ -155,7 +156,9 @@ run_agent() { # $1=template $2=session $3=cwd $4=log
   local prompt="${WORK}/$(basename "$4" .md)-prompt.md"
   render_prompt "$1" "$prompt"
   local evlog="${4}.events.jsonl"
-  ( cd "$3" && "$AGENT_CLI" --mode json --session-id "mm${issue}-$2" "$(cat "$prompt")" ) | tee -a "$evlog" | stream_filter || true
+  local model_flag=""
+  if [ "$2" = "coding" ] && [ -n "$CODING_MODEL" ]; then model_flag="--model ${CODING_MODEL}"; fi
+  ( cd "$3" && "$AGENT_CLI" --mode json $model_flag --session-id "mm${issue}-$2" "$(cat "$prompt")" ) | tee -a "$evlog" | stream_filter || true
   printf '\n'  # 确保流结束后后续 echo 另起一行
   # 从事件流提取全部助手正文（含末尾输出契约行）写入日志
   jq -r 'select(.type == "message_end" and .message.role == "assistant") | .message.content[]? | select(.type == "text") | .text, ""' "$evlog" 2>/dev/null >> "$4" || true
