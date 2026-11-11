@@ -282,7 +282,7 @@ cmd_status() {
   [ -f "$STATE" ] && cat "$STATE" || echo "(无状态)"
   echo "--- 最近机器行 ---"
   for f in "${LOGS}"/spec-output.md "${LOGS}"/round*-coding-output.md "${LOGS}"/round*-review-output.md; do
-    [ -f "$f" ] && echo "$(basename "$f"): $(grep -E '^(SPEC_RESULT|PIPELINE_RESULT|PIPELINE_VERDICT)' "$f" | tail -1)"
+    [ -f "$f" ] && { echo "$(basename "$f"): $(grep -E '^(SPEC_RESULT|PIPELINE_RESULT|PIPELINE_VERDICT)' "$f" | tail -1)" || true; }
   done
 }
 
