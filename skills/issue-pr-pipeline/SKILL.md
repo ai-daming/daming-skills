@@ -1,0 +1,85 @@
+---
+name: issue-pr-pipeline
+description: 编排「Issue → Spec 准入与决策包 → Coding Agent 实现 → Review Agent 审查 → 合并」的自动交付循环。给定一个 GitHub issue，先做预检与规格分析，把需要人工拍板的业务决策一次性打包问完并生成实施契约，然后由无头 agent 按契约 TDD 实现提 PR、按 pr-analyze 协议独立审查，通过则合并、打回则返工，直到合并或触发安全阀。适用于根因可静态定位、验收可自动验证的代码类 issue；需要真机复现或业务创意类 issue 会在准入阶段被判 NOT_READY。
+---
+
+# Issue → PR 交付流水线
+
+把一个 GitHub issue 交给三个无头 agent 接力完成：**Spec Agent**（准入 + 决策包 + 实施契约）、**Coding Agent**（TDD 实现提 PR）、**Review Agent**（pr-analyze 协议独立审查），编排者（加载本 skill 的 agent）驱动全程并在两个人工关口转交决策。
+
+## 前置条件
+
+1. `gh` 已登录且有目标仓库写权限；`pi`（或兼容的 headless agent CLI）已安装。
+2. 本 skill 的兄弟目录存在 `grill/` 与 `pr-analyze/`（同一 daming-skills 检出内），`pr-analyze` 已配置 `config.json` 的 `report_dir`。
+3. 已复制 `config.example.json` 为本目录 `config.json`（`config.json` 不随仓库发布）并填好目标仓库信息。
+4. 用户已明确授权对指定 issue 运行本流水线（含授权 Coding Agent 在专属分支上 commit/push/建 PR）。
+
+## 总流程
+
+```
+输入：GitHub Issue
+   ↓
+⓪ 预检（Spec Agent 先行）：
+   ├─ 已随历史 PR 完成且验收满足 → 补证关闭→ 结束
+   ├─ 业务已过时、场景不再适用 → not planned 关闭→ 结束
+   └─ 有效 → 继续
+① SPEC：深度分析（事实，agent 自己查）+ 决策审讯（grill 纪律）
+   ├─ NOT_READY（要真机/业务未定/范围过大）→ 向用户报告，结束
+   ├─ 有待拍板决策 → 生成决策包 →【人工关口 1】用户一次批量拍板
+   └─ 生成实施契约（目标/边界/验收点/TDD 场景/非目标/决策台账）
+② CODE：Coding Agent 按契约 TDD 实现，专属分支提 PR（base=主干开发分支）
+③ REVIEW：Review Agent 按 pr-analyze 协议独立审查，输出 PIPELINE_VERDICT
+   ├─ APPROVE → 按 merge_policy 合并 → 评论 issue → 结束 ✅
+   ├─ CHANGES_REQUIRED → 审查报告作为反馈评论 issue → 回 ②（同分支同 PR 返工）
+   └─ WAIT → 停机等人工（head 漂移/门禁未知/需新决策）
+⓸ 安全阀：超过 max_rounds 轮未通过 → 停机等人工
+```
+
+## 人工关口（仅两个）
+
+1. **决策包**：Spec Agent 产出后，编排者原样呈现给用户（每题已含推荐答案），用户一条消息批量拍板或全采纳推荐。禁止拆成多次零碎询问；用户未答前不得启动 Coding Agent。
+2. **合并放行**：按 `merge_policy`——`auto-if-green`（绿门自动合并，红门挂起问人）或 `manual`（总是问人）。带红合并必须由用户明确拍板并记录豁免理由。
+
+关单动作（预检的 completed / not planned 出口）需用户确认后按 `gh-issue` 协议执行，不自动关闭。
+
+## 编排职责（加载本 skill 的 agent 必须遵守）
+
+- **逐阶段驱动** `run.sh`（见下），每阶段之间解析输出契约、检查产物、更新状态，不盲目连跑。
+- **单实例锁**：`run.sh` 自带锁文件；发现目标已在运行时报告并等待，不重复启动。
+- **传递基线**：实施契约必须先落到 issue 评论（经用户在关口 1 一并确认），Coding/Review Agent 均以该契约 + issue 为验收基线。
+- **反馈回路**：Review Agent 的完整报告既是 issue 评论（留痕）也是 Coding Agent 下一轮的返工输入。
+- **失败诚实**：任何阶段 BLOCKED/超时/输出契约缺失，如实报告并停在该阶段，不伪造进度。
+- **不越权**：编排者与三个 agent 都不部署、不改生产配置；生产验收类验收点留给维护者，合并评论须注明。
+
+## run.sh 用法
+
+```bash
+cd <本 skill 目录>
+./run.sh spec <issue>      # 预检 + 规格；产出决策包或契约（见输出契约）
+./run.sh init <issue>      # 创建 Coding Agent 专属 worktree/分支
+./run.sh coding <issue> <round> # Coding Agent 第 round 轮（1=实现，>1=按反馈返工）
+./run.sh review <issue> <round> # Review Agent 审查该轮 PR
+./run.sh finish <issue> <round>  # 合并 + issue 评论
+./run.sh status <issue>    # 查看当前状态
+```
+
+所有状态与日志在 `config.json` 的 `work_dir` 下按 issue 分目录存放。
+
+## Agent 输出契约
+
+| Agent | 最后一行必须是 |
+|---|---|
+| Spec | `SPEC_RESULT: READY` \| `DECISIONS_REQUIRED` \| `NOT_READY=<原因>` \| `CLOSE_RECOMMENDED=<completed\|not_planned>; <证据摘要>` |
+| Coding | `PIPELINE_RESULT: PR=<编号>` \| `PUSHED` \| `BLOCKED=<原因>` |
+| Review | `PIPELINE_VERDICT: APPROVE` \| `CHANGES_REQUIRED` \| `WAIT` |
+
+编排者只信任这些机器行；缺失即视为该阶段失败。
+
+## 详细协议
+
+- 各 agent 提示词模板：`prompts/`（spec-agent.md、coding-round1.md、coding-fix.md、review-agent.md），占位符由 run.sh 注入。
+- 决策包格式、契约结构、边界情况处置（预检关闭、契约缺口兜底、CI 红门归因）：见 [references/pipeline-contract.md](references/pipeline-contract.md)。
+
+## 实测校准
+
+本流水线在 mamamate #464 上完成过全链路实测：预检补关 #364（completed）与 #476（not planned）、两轮 A/B 返工、F3 类契约缺口由 Review Agent 抓出并经用户拍板后闭环、CI 红门归因后由用户拍板带红合并。SKILL.md 与提示词中的纪律（决策包一次性、事实不问用户、日志不可删、锁文件）均来自该实测教训，改动前先理解其原因。
