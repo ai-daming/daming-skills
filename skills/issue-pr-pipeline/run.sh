@@ -165,6 +165,12 @@ cmd_spec() {
       else
         echo "下一步： ./run.sh answer ${ISSUE_REF} 逐题拍板（非交互用： ./run.sh answer ${ISSUE_REF} 'Q1=B'）"
       fi ;;
+    *READY*)
+      # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕（幂等：只发一次）
+      if [ -f "${WORK}/contract.md" ] && ! grep -q '^CONTRACT_POSTED=' "$STATE" 2>/dev/null; then
+        gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/contract.md" \
+          && { state_set "CONTRACT_POSTED=1"; echo "契约已回写 issue（验收基线）"; }
+      fi ;;
   esac
 }
 
