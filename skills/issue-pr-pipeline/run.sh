@@ -265,8 +265,26 @@ cmd_init() {
   fi
 }
 
+current_round() { # 最近一个已完成 coding 的轮次（输出契约行存在才算）
+  local f r max=0
+  for f in "${LOGS}"/round*-coding-output.md; do
+    [ -f "$f" ] || continue
+    grep -qE '^PIPELINE_RESULT:' "$f" || continue
+    r="${f##*/round}"; r="${r%%-*}"
+    case "$r" in ''|*[!0-9]*) continue ;; esac
+    [ "$r" -gt "$max" ] && max="$r"
+  done
+  echo "$max"
+}
+
+next_round() { # 下一轮 coding = 已打回次数 + 1
+  local n=0 f
+  for f in "${LOGS}"/round*-review-feedback.md; do [ -f "$f" ] && n=$((n+1)); done
+  echo $(( n + 1 ))
+}
+
 cmd_coding() {
-  local round="${3:?round required}"
+  local round="${3:-$(next_round)}"
   local template="${SKILL_DIR}/prompts/coding-round1.md"
   if [ "$round" -gt 1 ]; then
     local fb="${LOGS}/round$((round-1))-review-feedback.md"
@@ -282,7 +300,8 @@ cmd_coding() {
 }
 
 cmd_review() {
-  local round="${3:?round required}"
+  local round="${3:-$(current_round)}"
+  [ "$round" -gt 0 ] || { echo "ERROR: 没有已完成的 coding 轮次，先跑 coding" >&2; exit 2; }
   local pr; pr="$(state_last PR)"
   [ -n "$pr" ] || { echo "ERROR: state 无 PR 号，先跑 coding" >&2; exit 2; }
   run_agent "${SKILL_DIR}/prompts/review-agent.md" review "$MAIN_REPO" "${LOGS}/round${round}-review-output.md"
@@ -295,7 +314,8 @@ cmd_review() {
 }
 
 cmd_finish() {
-  local round="${3:-1}"
+  local round="${3:-$(current_round)}"
+  [ "$round" -gt 0 ] || { echo "ERROR: 没有已完成的 coding 轮次" >&2; exit 2; }
   local pr; pr="$(state_last PR)"
   [ -n "$pr" ] || { echo "ERROR: state 无 PR 号" >&2; exit 2; }
   local force="${FORCE:-0}"

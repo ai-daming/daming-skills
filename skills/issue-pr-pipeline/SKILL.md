@@ -63,9 +63,9 @@ cd <本 skill 目录>
 ./run.sh answer ai-daming/mamamate#500 "Q1=B;Q2=A"  # 非交互一行式（编排 agent 用）
 ./run.sh spec 500                      # 裸号：用 config 顶层 repo/base_branch/main_repo_path
 ./run.sh init <issue-ref>              # 创建 Coding Agent 专属 worktree/分支
-./run.sh coding <issue-ref> <round>    # Coding Agent 第 round 轮（1=实现，>1=按反馈返工）
-./run.sh review <issue-ref> <round>    # Review Agent 审查该轮 PR
-./run.sh finish <issue-ref> <round>    # 合并 + issue 评论
+./run.sh coding <issue-ref> [round]    # Coding Agent（不传轮次自动=打回次数+1）
+./run.sh review <issue-ref> [round]    # Review Agent（不传轮次自动=当前轮）
+./run.sh finish <issue-ref> [round]    # 合并 + issue 评论（轮次同上，可不传）
 ./run.sh loop <issue-ref>              # 全自动循环（契约就绪后）：两个人工关口自动停
 ./run.sh cleanup <issue-ref>           # 清理该期重量级产物（需 MERGED 记录）
 ./run.sh status <issue-ref>            # 查看当前状态
