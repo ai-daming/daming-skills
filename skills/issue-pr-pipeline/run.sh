@@ -125,10 +125,14 @@ stream_filter() { # 从 JSONL 事件流中吐人读进度：工具调用 + 正�
     local t; t="$(printf '%s' "$line" | jq -r '.type // empty' 2>/dev/null || true)"
     case "$t" in
       tool_execution_start)
-        printf '[%s] 🔧 %s\n' "$(date +%H:%M:%S)" \
-          "$(printf '%s' "$line" | jq -r '.toolName as $n | (.args // {}) | to_entries | map(.value|tostring) | join(" ") | $n + ": " + .' 2>/dev/null | tr '\n' ' ' | cut -c1-140)" ;;
+        printf '\n[%s] 🔧 %s\n' "$(date +%H:%M:%S)" \
+          "$(printf '%s' "$line" | jq -r '.toolName as $n | (.args // {}) | to_entries | map(.key + "=" + (.value|tostring)) | join(" ") | $n + " " + .' 2>/dev/null | tr '\n' ' ' | awk '{print substr($0,1,100)}')" ;;
       message_update)
-        printf '%s' "$(printf '%s' "$line" | jq -r 'select(.assistantMessageEvent.type == "text_delta") | .assistantMessageEvent.delta // empty' 2>/dev/null || true)" ;;
+        local ev; ev="$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type // empty' 2>/dev/null || true)"
+        case "$ev" in
+          text_start) printf '\n' ;;
+          text_delta) printf '%s' "$(printf '%s' "$line" | jq -r '.assistantMessageEvent.delta // empty' 2>/dev/null || true)" ;;
+        esac ;;
     esac
   done
 }
@@ -148,7 +152,7 @@ expect_line() { # $1=file $2=pattern
 
 # ---------- 阶段 ----------
 cmd_spec() {
-  run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md" | tail -5
+  run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md"
   local verdict; verdict="$(expect_line "${LOGS}/spec-output.md" '^SPEC_RESULT:')"
   echo "SPEC => ${verdict:-缺失输出契约}"
 }
@@ -174,7 +178,7 @@ cmd_coding() {
     sed "s#__FEEDBACK__#${fb}#" "$template" > "${WORK}/.coding-fix-tpl.md"
     template="${WORK}/.coding-fix-tpl.md"
   fi
-  run_agent "$template" coding "${WORK}/wt" "${LOGS}/round${round}-coding-output.md" | tail -5
+  run_agent "$template" coding "${WORK}/wt" "${LOGS}/round${round}-coding-output.md"
   local pr; pr="$(expect_line "${LOGS}/round${round}-coding-output.md" 'PIPELINE_RESULT: PR=' | grep -oE '[0-9]+' || true)"
   if [ -n "$pr" ]; then state_set "PR=${pr}"; fi
   echo "CODING round ${round} => $(expect_line "${LOGS}/round${round}-coding-output.md" '^PIPELINE_RESULT:' || echo 缺失输出契约)"
@@ -184,7 +188,7 @@ cmd_review() {
   local round="${3:?round required}"
   local pr; pr="$(state_last PR)"
   [ -n "$pr" ] || { echo "ERROR: state 无 PR 号，先跑 coding" >&2; exit 2; }
-  run_agent "${SKILL_DIR}/prompts/review-agent.md" review "$MAIN_REPO" "${LOGS}/round${round}-review-output.md" | tail -5
+  run_agent "${SKILL_DIR}/prompts/review-agent.md" review "$MAIN_REPO" "${LOGS}/round${round}-review-output.md"
   local verdict; verdict="$(expect_line "${LOGS}/round${round}-review-output.md" '^PIPELINE_VERDICT:' | grep -oE '(APPROVE|CHANGES_REQUIRED|WAIT)' || true)"
   state_set "VERDICT=${verdict:-MISSING}"
   case "$verdict" in
