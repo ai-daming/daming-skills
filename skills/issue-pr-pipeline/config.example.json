@@ -1,11 +1,14 @@
 {
-  "repo": "OWNER/NAME",
-  "project": "PROJECT_SLUG",
-  "base_branch": "dev",
-  "main_repo_path": "/absolute/path/to/local/checkout",
   "work_dir": "/absolute/path/to/pipeline-workdir",
   "agent_cli": "pi",
   "max_rounds": 3,
   "merge_policy": "auto-if-green",
-  "cleanup_after_merge": false
+  "cleanup_after_merge": false,
+  "repos": {
+    "OWNER/NAME": {
+      "main_repo_path": "/absolute/path/to/local/checkout",
+      "base_branch": "dev",
+      "project": "PROJECT_SLUG"
+    }
+  }
 }

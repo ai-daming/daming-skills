@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # issue-pr-pipeline 编排脚本
-# 用法: ./run.sh [-c <config.json>] <stage> <issue> [round]
+# 用法: ./run.sh [-c <config.json>] <stage> <issue-ref> [round]
+#   issue-ref 支持： 123 | owner/repo#123 | owner/repo 123 | https://github.com/owner/repo/issues/123
+#   带 repo 时自动解析：优先 config 的 repos 映射（指向本地检出），否则自动 clone 到 work_dir/repos/<name>
 # 依赖: bash 4+, jq, gh, 以及 config.json 中配置的 agent CLI（默认 pi）
 set -euo pipefail
 
@@ -19,31 +21,64 @@ if [ ! -f "$CONFIG" ]; then
 fi
 command -v jq >/dev/null || { echo "ERROR: 需要 jq" >&2; exit 1; }
 
-REPO="$(jq -r .repo "$CONFIG")"
-BASE="$(jq -r .base_branch "$CONFIG")"
-MAIN_REPO="$(jq -r .main_repo_path "$CONFIG")"
 WORK_ROOT="$(jq -r .work_dir "$CONFIG")"
-# 项目分组目录：优先 config 的 project，缺省取 repo 名（owner/name → name），避免多项目 issue 号冲突；仅保留 ASCII 安全字符
-PROJECT="$(jq -r '.project // (.repo | split("/")[-1] // .repo)' "$CONFIG" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/-\{2,\}/-/g' -e 's/^-*//' -e 's/-*$//')"
-[ -n "$PROJECT" ] || PROJECT="project"
 AGENT_CLI="$(jq -r '.agent_cli // "pi"' "$CONFIG")"
 MAX_ROUNDS="$(jq -r '.max_rounds // 3' "$CONFIG")"
 MERGE_POLICY="$(jq -r '.merge_policy // "manual"' "$CONFIG")"
 CLEANUP_AFTER_MERGE="$(jq -r '.cleanup_after_merge // false' "$CONFIG")"
 
-for req in "$MAIN_REPO" "$WORK_ROOT"; do
-  [ -d "$req" ] || { echo "ERROR: 目录不存在: $req（检查 config.json）" >&2; exit 1; }
-done
-command -v "$AGENT_CLI" >/dev/null 2>&1 || { echo "ERROR: 找不到 agent CLI: ${AGENT_CLI}" >&2; exit 1; }
-
 GRILL_MD="${SKILLS_DIR}/grill/SKILL.md"
 PR_ANALYZE_MD="${SKILLS_DIR}/pr-analyze/SKILL.md"
+command -v "$AGENT_CLI" >/dev/null 2>&1 || { echo "ERROR: 找不到 agent CLI: ${AGENT_CLI}" >&2; exit 1; }
 for req in "$GRILL_MD" "$PR_ANALYZE_MD"; do
   [ -f "$req" ] || { echo "ERROR: 缺少兄弟 skill 文件: $req（需与 grill、pr-analyze 同处一个 daming-skills 检出）" >&2; exit 1; }
 done
 
+# ---------- 解析 issue-ref 与仓库 ----------
+RAW="${2:?usage: run.sh <stage> <123 | owner/repo#123 | owner/repo 123 | URL> [round]}"
+REPO_ARG=""
+case "$RAW" in
+  http*) REPO_ARG="$(printf '%s' "$RAW" | sed -E 's#https?://[^/]+/([^/]+)/([^/]+)/(issues|pull)/.*#\1/\2#')"; RAW="${RAW##*/}" ;;
+  *\#*) REPO_ARG="${RAW%%#*}"; RAW="${RAW##*#}" ;;
+  */*)   REPO_ARG="${RAW%%/*}"; RAW="${RAW##*/}" ;;
+esac
+issue="$RAW"
+[[ "$issue" =~ ^[0-9]+$ ]] || { echo "ERROR: 无法从参数解析 issue 号: ${2}" >&2; exit 1; }
+
+if [ -n "$REPO_ARG" ]; then
+  REPO="$REPO_ARG"
+  MAIN_REPO="$(jq -r --arg r "$REPO" '.repos[$r].main_repo_path // empty' "$CONFIG")"
+  BASE="$(jq -r --arg r "$REPO" '.repos[$r].base_branch // empty' "$CONFIG")"
+  PROJ_OVERRIDE="$(jq -r --arg r "$REPO" '.repos[$r].project // empty' "$CONFIG")"
+  if [ -z "$MAIN_REPO" ]; then
+    MAIN_REPO="${WORK_ROOT}/repos/${REPO##*/}"
+    if [ ! -d "${MAIN_REPO}/.git" ]; then
+      echo "CLONING ${REPO} -> ${MAIN_REPO}（首次自动 clone；已有本地检出可在 config 的 repos 映射指向它）" >&2
+      mkdir -p "${MAIN_REPO%/*}"
+      gh repo clone "$REPO" "$MAIN_REPO"
+    fi
+  fi
+  if [ -z "$BASE" ]; then
+    if git -C "$MAIN_REPO" ls-remote --heads origin dev 2>/dev/null | grep -q .; then BASE=dev
+    else BASE="$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name)"; fi
+  fi
+else
+  REPO="$(jq -r '.repo // empty' "$CONFIG")"
+  BASE="$(jq -r '.base_branch // empty' "$CONFIG")"
+  MAIN_REPO="$(jq -r '.main_repo_path // empty' "$CONFIG")"
+  PROJ_OVERRIDE="$(jq -r '.project // empty' "$CONFIG")"
+  [ -n "$REPO" ] && [ -n "$BASE" ] && [ -n "$MAIN_REPO" ] || {
+    echo "ERROR: 裸 issue 号需要在 config.json 配 repo/base_branch/main_repo_path，或改用 owner/repo#${issue} 形式" >&2; exit 1; }
+fi
+[ -d "$WORK_ROOT" ] || { echo "ERROR: 目录不存在: $WORK_ROOT（检查 config 的 work_dir）" >&2; exit 1; }
+[ -d "${MAIN_REPO}/.git" ] || { echo "ERROR: 本地主检出不是 git 仓库: $MAIN_REPO" >&2; exit 1; }
+
+# 项目分组目录：避免多项目 issue 号冲突；仅保留 ASCII 安全字符
+PROJECT="${PROJ_OVERRIDE:-${REPO##*/}}"
+PROJECT="$(printf '%s' "$PROJECT" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/-\{2,\}/-/g' -e 's/^-*//' -e 's/-*$//')"
+[ -n "$PROJECT" ] || PROJECT="project"
+
 # ---------- 每期状态 ----------
-issue="${2:?usage: run.sh <stage> <issue> [round]}"
 WORK="${WORK_ROOT}/${PROJECT}/issue-${issue}"
 LOGS="${WORK}/logs"
 STATE="${WORK}/state.env"

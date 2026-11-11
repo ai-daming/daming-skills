@@ -53,24 +53,24 @@ description: 编排「Issue → Spec 准入与决策包 → Coding Agent 实现 
 
 ## run.sh 用法
 
+issue-ref 支持四种写法：`500`（裸号，需 config 顶层配好默认仓库）、`owner/repo#500`、`owner/repo 500`、完整 issue URL。
+
 ```bash
 cd <本 skill 目录>
-./run.sh spec <issue>      # 预检 + 规格；产出决策包或契约（见输出契约）
-./run.sh init <issue>      # 创建 Coding Agent 专属 worktree/分支
-./run.sh coding <issue> <round> # Coding Agent 第 round 轮（1=实现，>1=按反馈返工）
-./run.sh review <issue> <round> # Review Agent 审查该轮 PR
-./run.sh finish <issue> <round>  # 合并 + issue 评论
-./run.sh loop <issue>     # 全自动循环（契约就绪后）：两个人工关口自动停（决策包未决/合并红门）
-./run.sh status <issue>    # 查看当前状态
+./run.sh spec ai-daming/mamamate#500   # 多项目推荐写法：仓库从参数解析
+./run.sh spec 500                      # 裸号：用 config 顶层 repo/base_branch/main_repo_path
+./run.sh init <issue-ref>              # 创建 Coding Agent 专属 worktree/分支
+./run.sh coding <issue-ref> <round>    # Coding Agent 第 round 轮（1=实现，>1=按反馈返工）
+./run.sh review <issue-ref> <round>    # Review Agent 审查该轮 PR
+./run.sh finish <issue-ref> <round>    # 合并 + issue 评论
+./run.sh loop <issue-ref>              # 全自动循环（契约就绪后）：两个人工关口自动停
+./run.sh cleanup <issue-ref>           # 清理该期重量级产物（需 MERGED 记录）
+./run.sh status <issue-ref>            # 查看当前状态
 ```
 
 启动目录无关：脚本从自身位置与 config.json 解析一切路径，在任何目录执行都一样。
 
-**多项目**：每个项目一份配置（如 `configs/project-a.json`、`configs/project-b.json`，均不入库），用 `-c` 选择：
-
-```bash
-./run.sh -c configs/project-a.json spec 500
-```
+**仓库解析顺序**（带 repo 前缀时）：config 的 `repos` 映射（可指向已有本地检出并指定 base/project）→ 自动 clone 到 `work_dir/repos/<name>`（base 自动探测：有 `dev` 分支用 dev，否则用仓库默认分支）。裸号模式仅用 config 顶层三字段，适合单项目常用场景。
 
 ## 工作区布局：各 agent 在哪里干活
 
