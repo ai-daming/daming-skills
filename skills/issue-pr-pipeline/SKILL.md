@@ -38,7 +38,7 @@ description: 编排「Issue → Spec 准入与决策包 → Coding Agent 实现 
 ## 人工关口（仅两个）
 
 1. **决策包**：Spec Agent 产出后，用户跑 `run.sh answer`（逐题交互、回车采纳推荐）或一行式作答；禁止拆成多次零碎询问；用户未答前不得启动 Coding Agent。
-2. **合并放行**：按 `merge_policy`——`auto-if-green`（绿门自动合并，红门挂起问人）或 `manual`（总是问人）。带红合并必须由用户明确拍板并记录豁免理由。
+2. **合并放行**：按 `merge_policy`——`auto-if-green`（绿门=Review Agent 本地验证通过，自动合并；GitHub 测试工作流已禁用，checks 不构成门）或 `manual`（总是问人）。强行合并必须由用户明确拍板（FORCE=1）并记录理由。
 
 关单动作（预检的 completed / not planned 出口）需用户确认后按 `gh-issue` 协议执行，不自动关闭。
 

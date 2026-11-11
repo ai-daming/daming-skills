@@ -242,17 +242,18 @@ cmd_finish() {
   local pr; pr="$(state_last PR)"
   [ -n "$pr" ] || { echo "ERROR: state 无 PR 号" >&2; exit 2; }
   local force="${FORCE:-0}"
-
-  if [ "$MERGE_POLICY" = "auto-if-green" ] && [ "$force" != "1" ]; then
-    if ! gh pr checks "$pr" --repo "$REPO" >/dev/null 2>&1; then
-      echo "GATES_NOT_GREEN: 按 auto-if-green 策略挂起，需人工拍板（带红合并用 FORCE=1 ./run.sh finish）" >&2
-      exit 2
-    fi
+  local verdict; verdict="$(state_last VERDICT)"
+  # 绿门 = Review Agent 本地验证通过（GitHub 测试工作流已禁用，checks 不构成门）
+  if [ "$force" != "1" ] && [ "$verdict" != "APPROVE" ]; then
+    echo "NOT_APPROVED: 最近审查结论为 ${verdict:-无}；绿门=审查通过（本地验证）。强行合并需 FORCE=1" >&2
+    exit 2
   fi
 
   gh pr merge "$pr" --repo "$REPO" --merge
   cat > "${WORK}/.merged-comment.md" <<EOF
-PR #${pr} 已通过审查（Review Agent，pr-analyze 协议，第 ${round} 轮）并合并到 ${BASE}。实施契约见本 issue 评论区。需要真机/生产复核的验收点请维护者执行后关闭本单。
+🤖 流水线自动生成 · 阶段：merge
+
+PR #${pr} 已通过审查（Review Agent，pr-analyze 协议，第 ${round} 轮）并合并到 ${BASE}。绿门 = Review Agent 在精确 head 上的本地验证（测试/build/lint）。GitHub Actions 测试工作流已于 2026-11-11 由维护者禁用（账单原因），checks 不构成合并门；该运维决策记录于此。实施契约见本 issue 评论区。需要真机/生产复核的验收点请维护者执行后关闭本单。
 EOF
   gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/.merged-comment.md"
   state_set "MERGED=${pr}"
