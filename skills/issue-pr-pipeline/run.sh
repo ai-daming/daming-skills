@@ -125,6 +125,8 @@ render_prompt() { # $1=template $2=dest  占位符来自当前上下文
   sed -e "s#__ISSUE__#${issue}#g" \
       -e "s#__REPO__#${REPO}#g" \
       -e "s#__BASE__#${BASE}#g" \
+      -e "s#__BASE_OID__#${CODING_BASE:-unknown}#g" \
+      -e "s#__REMOTE_BRANCH_OID__#${CODING_REMOTE_BRANCH:-none}#g" \
       -e "s#__BRANCH__#${BRANCH}#g" \
       -e "s#__WORK__#${WORK}#g" \
       -e "s#__SKILLS_DIR__#${SKILLS_DIR}#g" \
@@ -357,10 +359,41 @@ cmd_coding() {
   fi
   CODING_RESULT=""
   state_set "VERDICT=MISSING"
+  git -C "$MAIN_REPO" fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}" || { echo "ERROR: 获取最新主分支失败" >&2; return 1; }
+  CODING_BASE="$(git -C "$MAIN_REPO" rev-parse "refs/remotes/origin/${BASE}")" || return 1
+  local remote_branch_ref
+  remote_branch_ref="$(git -C "$MAIN_REPO" ls-remote --heads origin "refs/heads/${BRANCH}")" || { echo "ERROR: 获取远端工作分支失败" >&2; return 1; }
+  CODING_REMOTE_BRANCH="none"
+  if [ -n "$remote_branch_ref" ]; then
+    git -C "$MAIN_REPO" fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" || { echo "ERROR: 获取远端工作分支失败" >&2; return 1; }
+    CODING_REMOTE_BRANCH="$(git -C "$MAIN_REPO" rev-parse "refs/remotes/origin/${BRANCH}")" || return 1
+  fi
   run_agent "$template" coding "${WORK}/wt" "${LOGS}/round${round}-coding-output.md" || { echo "ERROR: Coding Agent 失败" >&2; return 1; }
   CODING_RESULT="$(final_line "$CURRENT_OUTPUT")"
   local pr; pr="$(printf '%s\n' "$CODING_RESULT" | sed -nE 's/^PIPELINE_RESULT: PR=([0-9]+)[[:space:]]*$/\1/p')"
   if [ -n "$pr" ]; then state_set "PR=${pr}"; fi
+  if [[ "$CODING_RESULT" =~ ^PIPELINE_RESULT:\ PR=[0-9]+$ || "$CODING_RESULT" = 'PIPELINE_RESULT: PUSHED' ]]; then
+    if ! git -C "${WORK}/wt" merge-base --is-ancestor "$CODING_BASE" HEAD; then
+      echo "ERROR: Coding 结果未包含已抓取的主分支，请同步并解决冲突后重试" >&2; return 8
+    fi
+    if [ "$CODING_REMOTE_BRANCH" != none ] && ! git -C "${WORK}/wt" merge-base --is-ancestor "$CODING_REMOTE_BRANCH" HEAD; then
+      echo "ERROR: Coding 结果未包含已抓取的远端工作分支提交" >&2; return 8
+    fi
+    if [ -n "$(git -C "${WORK}/wt" diff --name-only --diff-filter=U)" ]; then
+      echo "ERROR: Coding 工作区仍有未解决冲突" >&2; return 1
+    fi
+    local remote_pr_head local_head current_pr
+    current_pr="${pr:-$(state_last PR)}"
+    [ -n "$current_pr" ] || { echo "ERROR: Coding 未提供可验证的 PR" >&2; return 1; }
+    local_head="$(git -C "${WORK}/wt" rev-parse HEAD)" || return 1
+    remote_pr_head="$(gh pr view "$current_pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
+    [[ "$remote_pr_head" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定远端 PR head" >&2; return 1; }
+    if [ "$local_head" != "$remote_pr_head" ]; then
+      echo "ERROR: 本地 Coding 结果与 PR 的 head 不一致，请核对远端提交后重试" >&2; return 8
+    fi
+    state_set "CODING_BASE=${CODING_BASE}"
+    state_set "CODING_HEAD=${local_head}"
+  fi
   echo "CODING round ${round} => ${CODING_RESULT:-缺失输出契约}"
   [[ "$CODING_RESULT" =~ ^PIPELINE_RESULT:\ PR=[0-9]+$ || "$CODING_RESULT" = 'PIPELINE_RESULT: PUSHED' ]]
 }
@@ -372,10 +405,24 @@ cmd_review() {
   local pr; pr="$(state_last PR)"
   [ -n "$pr" ] || { echo "ERROR: state 无 PR 号，先跑 coding" >&2; exit 2; }
   state_set "VERDICT=MISSING"
-  local review_head final_head review_contract
+  local review_head final_head review_base final_base review_contract pr_base
   review_contract="$(contract_fingerprint)"
+  pr_base="$(gh pr view "$pr" --repo "$REPO" --json baseRefName --jq .baseRefName)" || return 1
+  [ "$pr_base" = "$BASE" ] || { echo "ERROR: PR 目标分支已变化，停止审查" >&2; return 1; }
   review_head="$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
+  review_base="$(gh pr view "$pr" --repo "$REPO" --json baseRefOid --jq .baseRefOid)" || return 1
   [[ "$review_head" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定 PR head" >&2; return 1; }
+  [[ "$review_base" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定 PR 主分支版本" >&2; return 1; }
+  if [ -n "$(state_last CODING_HEAD)" ] && [ "$(state_last CODING_HEAD)" != "$review_head" ]; then
+    state_set "VERDICT=HEAD_MOVED"
+    echo "PR 在 Coding 后更新，需要保留远端提交并重新验证" >&2
+    return 0
+  fi
+  if [ -n "$(state_last CODING_BASE)" ] && [ "$(state_last CODING_BASE)" != "$review_base" ]; then
+    state_set "VERDICT=BASE_MOVED"
+    echo "主分支在 Coding 后更新，需要同步并重新验证" >&2
+    return 0
+  fi
   mkdir -p "${WORK}/review-worktrees"
   local review_parent
   review_parent="$(cd "${WORK}/review-worktrees" && pwd -P)"
@@ -383,15 +430,22 @@ cmd_review() {
   run_agent "${SKILL_DIR}/prompts/review-agent.md" review "$MAIN_REPO" "${LOGS}/round${round}-review-output.md" || { echo "ERROR: Review Agent 失败" >&2; return 1; }
   local verdict; verdict="$(final_line "$CURRENT_OUTPUT" | sed -nE 's/^PIPELINE_VERDICT: (APPROVE|CHANGES_REQUIRED|WAIT)[[:space:]]*$/\1/p')"
   final_head="$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
+  final_base="$(gh pr view "$pr" --repo "$REPO" --json baseRefOid --jq .baseRefOid)" || return 1
+  [[ "$final_head" =~ ^[0-9a-fA-F]{40}$ && "$final_base" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定审查后的 PR 版本" >&2; return 1; }
   if [ "$review_head" != "$final_head" ]; then
-    verdict=WAIT
-    printf '\n流水线：审查期间 PR head 已变化，原结论作废，需重新审查。\n' >> "$CURRENT_OUTPUT"
+    verdict=HEAD_MOVED
+    printf '\n流水线：审查期间 PR head 已变化，原结论作废，需保留远端更新并重新审查。\n' >> "$CURRENT_OUTPUT"
+  fi
+  if [ "$review_head" = "$final_head" ] && [ "$review_base" != "$final_base" ]; then
+    verdict=BASE_MOVED
+    printf '\n流水线：审查期间主分支已变化，需要同步并重新验证。\n' >> "$CURRENT_OUTPUT"
   fi
   if [ "$review_contract" != "$(contract_fingerprint)" ] || [ "$(state_last CONTRACT_READY)" != "$review_contract" ]; then
     verdict=WAIT
     printf '\n流水线：审查期间契约或决策已变化，原结论作废，需重新确认并审查。\n' >> "$CURRENT_OUTPUT"
   fi
   state_set "REVIEW_HEAD=${review_head}"
+  state_set "REVIEW_BASE=${review_base}"
   state_set "REVIEW_PR=${pr}"
   state_set "REVIEW_ROUND=${round}"
   state_set "REVIEW_CONTRACT=${review_contract}"
@@ -417,15 +471,33 @@ cmd_finish() {
     echo "NOT_APPROVED: 最近审查结论为 ${verdict:-无}；绿门=审查通过（本地验证）。强行合并需 FORCE=1" >&2
     exit 2
   fi
-  local head reviewed_head
+  local head reviewed_head current_base pr_base
   head="$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
   [[ "$head" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定 PR head" >&2; return 1; }
   reviewed_head="$(state_last REVIEW_HEAD)"
-  if [ "$force" != "1" ] && { [ "$head" != "$reviewed_head" ] || [ "$(state_last REVIEW_PR)" != "$pr" ] || [ "$(state_last REVIEW_ROUND)" != "$round" ] || [ "$(state_last REVIEW_CONTRACT)" != "$(contract_fingerprint)" ]; }; then
+  pr_base="$(gh pr view "$pr" --repo "$REPO" --json baseRefName --jq .baseRefName)" || return 1
+  [ "$pr_base" = "$BASE" ] || { echo "ERROR: PR 目标分支已变化，停止合并" >&2; return 1; }
+  current_base="$(gh pr view "$pr" --repo "$REPO" --json baseRefOid --jq .baseRefOid)" || return 1
+  [[ "$current_base" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定当前主分支版本" >&2; return 1; }
+  if [ -z "$(state_last REVIEW_BASE)" ] || [ "$current_base" != "$(state_last REVIEW_BASE)" ]; then
+    echo "BASE_MOVED: 主分支自审查后已变化，需要重新同步和审查" >&2; return 7
+  fi
+  if [ "$force" != "1" ] && [ "$head" != "$reviewed_head" ]; then
+    echo "HEAD_MOVED: PR 在审查后更新，需要协调远端提交并重新审查" >&2; return 8
+  fi
+  if [ "$force" != "1" ] && { [ "$(state_last REVIEW_PR)" != "$pr" ] || [ "$(state_last REVIEW_ROUND)" != "$round" ] || [ "$(state_last REVIEW_CONTRACT)" != "$(contract_fingerprint)" ]; }; then
     echo "ERROR: 当前 PR、head 或契约与审查结果不一致，请重新审查" >&2; return 1
   fi
   require_not_manual || return 1
-  gh pr merge "$pr" --repo "$REPO" --merge --match-head-commit "$head" || return 1
+  if ! gh pr merge "$pr" --repo "$REPO" --merge --match-head-commit "$head"; then
+    local after_head after_base
+    after_head="$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
+    after_base="$(gh pr view "$pr" --repo "$REPO" --json baseRefOid --jq .baseRefOid)" || return 1
+    [[ "$after_head" =~ ^[0-9a-fA-F]{40}$ && "$after_base" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+    if [ "$after_head" != "$head" ]; then echo "HEAD_MOVED: PR 在合并请求期间更新" >&2; return 8; fi
+    if [ "$after_base" != "$current_base" ]; then echo "BASE_MOVED: 主分支在合并请求期间更新" >&2; return 7; fi
+    return 1
+  fi
   state_set "MERGED=${pr}"
   cat > "${WORK}/.merged-comment.md" <<EOF
 🤖 流水线自动生成 · 阶段：merge
@@ -453,11 +525,19 @@ cmd_loop() {
       | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
       && state_set "LOOP_STARTED=1" || true
   }
-  local round pr verdict
+  local round pr verdict sync_attempts=0 finish_status coding_status
   round="$(next_round)"
   while [ "$round" -le "$MAX_ROUNDS" ]; do
     echo "=== ROUND ${round}: coding ==="
-    if ! cmd_coding loop "$issue" "$round"; then
+    if cmd_coding loop "$issue" "$round"; then coding_status=0; else coding_status=$?; fi
+    if [ "$coding_status" != 0 ]; then
+      if [ "$coding_status" = 8 ]; then
+        sync_attempts=$((sync_attempts+1))
+        if [ "$sync_attempts" -lt "$MAX_ROUNDS" ]; then
+          echo "Coding 基线或远端 PR 不一致，重新同步（${sync_attempts}/${MAX_ROUNDS}）"
+          continue
+        fi
+      fi
       set_pipeline_label pipeline/blocked
       printf 'Coding 第 %s 轮未成功，保留现场；详情见本地日志。\n' "$round" > "${WORK}/.blocked.md"
       post_issue_trace coding-blocked "${WORK}/.blocked.md" CODING_BLOCKED_POSTED || true
@@ -491,7 +571,19 @@ cmd_loop() {
           echo "REVIEW_APPROVED: 审查通过。按 manual 策略等你拍板合并： ./run.sh finish ${ISSUE_REF} ${round}（带红合并 FORCE=1）" >&2
           exit 6
         fi
-        if cmd_finish loop "$issue" "$round"; then exit 0; fi
+        if cmd_finish loop "$issue" "$round"; then exit 0; else finish_status=$?; fi
+        if [ "$finish_status" = 7 ] || [ "$finish_status" = 8 ]; then
+          sync_attempts=$((sync_attempts+1))
+          if [ "$sync_attempts" -lt "$MAX_ROUNDS" ]; then
+            echo "主分支或 PR 已变化，重新同步并审查（${sync_attempts}/${MAX_ROUNDS}）"
+            continue
+          fi
+          set_pipeline_label pipeline/blocked
+          printf '主分支或 PR 反复变化，达到 %s 次同步尝试上限；保留现场。\n' "$MAX_ROUNDS" > "${WORK}/.blocked.md"
+          post_issue_trace sync-blocked "${WORK}/.blocked.md" SYNC_BLOCKED_POSTED || true
+          echo "主分支或 PR 反复变化，达到重试上限；保留现场" >&2
+          exit 5
+        fi
         set_pipeline_label pipeline/blocked
         { printf '🤖 流水线自动生成 · 阶段：merge\n\n审查通过但门禁未绿，已挂起；带红合并需维护者拍板后 FORCE=1 ./run.sh finish %s %s。归因见审查报告。\n' "$ISSUE_REF" "$round" \
           | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
@@ -501,6 +593,16 @@ cmd_loop() {
       CHANGES_REQUIRED)
         echo "round ${round} 打回，反馈保存在本地，进入 round $((round+1))"
         round=$((round+1)) ;;
+      BASE_MOVED|HEAD_MOVED)
+        sync_attempts=$((sync_attempts+1))
+        if [ "$sync_attempts" -ge "$MAX_ROUNDS" ]; then
+          set_pipeline_label pipeline/blocked
+          printf '主分支或 PR 反复变化，达到 %s 次同步尝试上限；保留现场。\n' "$MAX_ROUNDS" > "${WORK}/.blocked.md"
+          post_issue_trace sync-blocked "${WORK}/.blocked.md" SYNC_BLOCKED_POSTED || true
+          echo "主分支或 PR 反复变化，达到重试上限；保留现场" >&2
+          exit 5
+        fi
+        echo "主分支或 PR 已变化，重新同步并审查（${sync_attempts}/${MAX_ROUNDS}）" ;;
       *)
         set_pipeline_label pipeline/blocked
         { printf '🤖 流水线自动生成 · 阶段：review\n\n' | cat - "$CURRENT_OUTPUT" \

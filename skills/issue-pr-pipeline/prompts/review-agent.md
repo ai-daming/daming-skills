@@ -6,7 +6,7 @@
 
 首先完整阅读 `__PR_ANALYZE_MD__`，把其中规定的工作流程作为本次审查的强制协议执行，包括：
 
-- 冻结审查基线：记录 baseRefOid / headRefOid，全程绑定该 head；head 变化即作废重启
+- 冻结审查基线：记录 baseRefOid / headRefOid；任一变化时原审查结果作废，重新检查受影响内容。
 - 按协议用**独立 detached worktree** 获取精确源码（本地主检出：__MAIN_REPO__，即当前目录；不要修改任何现有 checkout）
 - 本次审查工作树统一建在 `__REVIEW_ROOT__` 内（如 `__REVIEW_ROOT__/repo`；基线工作树也放在该目录下），使用 `git worktree add --detach`；这是本次流水线专用目录，替代协议示例中的 `/tmp` 路径。不要把其他任务的工作树移入这里。
 - 阅读 skill 的 references 并按其执行五个审查 pass；状态/边界敏感变更按 invariant-audit；触发条件出现时按 circuit-breaker
