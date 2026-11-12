@@ -28,7 +28,7 @@
 - 同时写机器可读版 `__WORK__/decision-package.json`，结构：
   `{"issue": <号>, "questions": [{"id": "Q1", "tier": "ask|auto", "title": "<一句话题面>", "recommendation": "<键>", "options": [{"key": "A", "label": "<一句话选项>"}]}]}`
   供 `run.sh answer` 交互答题使用，题目必须与 md 版一一对应（含档位）。
-- 若 `__WORK__/decision-package.answers.md` 存在（用户已批量拍板），跳过出题，直接进入第四步；用户答复中若有含糊或矛盾，按 grill 规则当面列为追问，不擅自解释。
+- 若 `__WORK__/decision-package.answers.md` 存在，先结合当前决策包、题意和历史确认答复覆盖对应问题，再进入第四步；历史手写答复可能没有机器绑定信息，不能仅凭文件存在认定所有问题已回答。答复不适用、缺失或含糊时，只对未解决的问题继续出题。
 
 **没有任何 material 决策**（事实已完全决定实现）时跳过决策包直接成文。
 

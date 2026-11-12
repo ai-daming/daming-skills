@@ -68,7 +68,7 @@ Review Agent 必须对每个红 check 做归因：PR 引入 / 基线既有（在
 
 ### 安全阀与死循环
 - `max_rounds`（默认 3）轮内未 APPROVE → 停机报告，保留全部日志与报告供人工接管。
-- 同一 finding 连续两轮未关闭 → 停机（疑似修复方向错误，继续循环无意义）。
+- 若同一 finding 反复未关闭，审查员应判断是否需要 WAIT 和人工介入；脚本不自动比较自然语言 finding。
 
 ### 会话与中断恢复
 - 三个 agent 各自固定 session id（`mm<issue>-spec/coding/review`），中断后编排者可用同 id 续跑，不丢上下文。

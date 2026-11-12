@@ -14,6 +14,18 @@ Request: Continue an already authorized implementation after a local commit. The
 
 Expected result: delta verification and a new `READY` receipt at the current baseline. Reuse existing design acceptance and scope-specific implementation authority without asking again. The old code review does not approve this HEAD; independent review must reassess it. If the delta instead introduces an uncovered restart or ownership rule, enter full verification and report the actual gap.
 
+## READY — conversational acceptance and routine details
+
+Request: After a concrete design was presented, the user says “可以，按这个开发” and later delegates ordinary technical choices. The draft still says `Draft`; a bounded page size remains to be selected, without changing the accepted outcome or hiding incomplete results.
+
+Expected result: treat the response as acceptance of the presented design and authorization for its implementation. Select and document the page size, verify the actual boundary, and issue `READY` if no material gap remains. Continue implementation in the same workstream. Do not ask for approval again or treat the agent's stale `Draft` label as evidence of non-acceptance. If a later design change changes a material user-owned trade-off, the earlier acceptance does not automatically cover that change.
+
+## DESIGN_REQUIRED — resolve the gap before ending the work
+
+Request: The user authorized a feature but its read-only check has no defined failure result. Existing product rules allow the agent to select the failure presentation without changing the user-owned decision.
+
+Expected result: remain out of implementation, complete the authorized design and verify how the failure reaches the caller, then rerun the gate. Do not repeatedly report `DESIGN_REQUIRED` without doing that independent work. If the missing choice instead determines whether an uncertain external payment is retried, stop and obtain the user's decision rather than inventing acceptance.
+
 ## READY with an outstanding release prerequisite
 
 Request: Implement a resolver whose accepted design requires legacy data mapping before activation. The mapping algorithm, failure handling, release ordering and verification are defined; an owned release task contains the mandatory mapping step and blocks activation until it passes.

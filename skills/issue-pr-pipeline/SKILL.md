@@ -38,7 +38,7 @@ description: 编排「Issue → Spec 准入与决策包 → Coding Agent 实现 
 ## 人工关口（仅两个）
 
 1. **决策包**：Spec Agent 产出后，用户跑 `run.sh answer`（逐题交互、回车采纳推荐）或一行式作答；禁止拆成多次零碎询问；用户未答前不得启动 Coding Agent。
-2. **合并放行**：按 `merge_policy`——`auto-if-green`（绿门=Review Agent 本地验证通过，自动合并；GitHub 测试工作流已禁用，checks 不构成门）或 `manual`（总是问人）。强行合并必须由用户明确拍板（FORCE=1）并记录理由。
+2. **合并放行**：按 `merge_policy`——`auto-if-green`（按仓库及本次授权要求完成审查和验证后自动合并）或 `manual`（自动循环停下，维护者明确执行 `finish`）。脚本将审查结论绑定 PR、轮次和 head，合并时校验 head。强行合并必须由用户明确拍板（FORCE=1）并记录理由。
 
 关单动作（预检的 completed / not planned 出口）需用户确认后按 `gh-issue` 协议执行，不自动关闭。
 
@@ -46,11 +46,12 @@ description: 编排「Issue → Spec 准入与决策包 → Coding Agent 实现 
 
 - **逐阶段驱动** `run.sh`（见下），每阶段之间解析输出契约、检查产物、更新状态，不盲目连跑。
 - **单实例锁**：`run.sh` 自带锁文件；发现目标已在运行时报告并等待，不重复启动。
-- **传递基线**：实施契约必须先落到 issue 评论（经用户在关口 1 一并确认），Coding/Review Agent 均以该契约 + issue 为验收基线。
-- **反馈回路**：Review Agent 的完整报告既是 issue 评论（留痕）也是 Coding Agent 下一轮的返工输入。
+- **传递基线**：实施契约必须先落到 issue 评论，Coding/Review Agent 均以该契约 + issue 为验收基线。脚本绑定契约、决策包和答复内容；变更后须重新 spec，审查后变更须重新 review。升级前旧任务也须重新 spec 以建立绑定。
+- **反馈回路**：Review Agent 的本轮报告回写 issue，打回时也是 Coding Agent 下一轮的返工输入；回写失败要报告。
+- **验证范围**：默认只运行相关测试和必要的受影响批次；只有用户明确要求时才运行全量回归。按实际结果报告测试、构建、lint 和 CI，不假定所有仓库的工作流状态相同。
 - **失败诚实**：任何阶段 BLOCKED/超时/输出契约缺失，如实报告并停在该阶段，不伪造进度。
 - **不越权**：编排者与三个 agent 都不部署、不改生产配置；生产验收类验收点留给维护者，合并评论须注明。
-- **全程留痕**：每个状态转换（决策包、契约、开工、每轮审查结论、合并、停机）都必须在 GitHub（issue/PR）留下带 🤖 徽标的评论，内容哈希变了就重发（幂等）；回写失败只警告不中断。终端输出不可作为唯一载体，issue 长度不是成本、历史才是资产。
+- **全程留痕**：决策包、契约、开工、审查、合并和停机尽量回写 GitHub；失败时如实报告。决策包或契约回写失败时不进入下一阶段，其他回写失败保留本地证据。
 
 ## run.sh 用法
 
@@ -81,7 +82,7 @@ cd <本 skill 目录>
 |---|---|---|
 | Spec | `main_repo_path`（目标项目本地主检出） | 只读纪律；在此目录是为了自动加载项目的 agent 指引（AGENTS.md 等） |
 | Coding | `work_dir/<project>/issue-<N>/wt`（专属 git worktree，分支 `agent/issue-<N>`） | 与你的主检出完全隔离；worktree 是全量检出，项目指引同样自动加载 |
-| Review | `main_repo_path` + 按协议在系统临时目录建独立 detached worktree | pr-analyze 自管审查工作树 |
+| Review | `main_repo_path` + `work_dir/<project>/issue-<N>/review-worktrees/` 下的独立 detached worktree | 本次流水线专用目录；旧版 `/tmp` 工作树不自动清理 |
 
 每期状态集中在 `work_dir/<project>/issue-<N>/`：`state.env`（PR 号/轮次/verdict）、`decision-package(.answers).md`、`contract.md`、`wt/`、`logs/`（各轮完整输出与反馈，只追加不删除）。
 
@@ -94,8 +95,8 @@ cd <本 skill 目录>
 | 产物 | 位置 | 量级 |
 |---|---|---|
 | Coding 专属 worktree（含构建产物、依赖） | `work_dir/<project>/issue-<N>/wt` | JVM/前端项目每期可达 GB 级 |
-| Review 审查工作树 | 系统临时目录 `pr-analyze-<PR>-*` | 同量级 |
-| 日志/契约/决策包/状态 | `work_dir/issue-<N>/` | KB 级，可长期保留 |
+| Review 审查工作树 | `work_dir/<project>/issue-<N>/review-worktrees/` | 同量级 |
+| 日志/契约/决策包/状态 | `work_dir/<project>/issue-<N>/` | 随运行增长，可长期保留 |
 
 处置：
 

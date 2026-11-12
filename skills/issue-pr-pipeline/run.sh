@@ -11,7 +11,6 @@ set -euo pipefail
 if [ "${PIPELINE_SNAPSHOT:-0}" != "1" ]; then
   _orig_dir="$(cd "$(dirname "$0")" && pwd)"
   _snap_dir="${TMPDIR:-/tmp}"
-  rm -f "${_snap_dir}"/ipp-snapshot.* 2>/dev/null || true  # 清理陈旧快照（运行中实例已持有 fd，unlink 安全）
   _snap="$(mktemp "${_snap_dir}/ipp-snapshot.XXXXXX")"
   cat "${_orig_dir}/run.sh" > "${_snap}"
   chmod +x "${_snap}"
@@ -39,7 +38,9 @@ AGENT_CLI="$(jq -r '.agent_cli // "pi"' "$CONFIG")"
 MAX_ROUNDS="$(jq -r '.max_rounds // 3' "$CONFIG")"
 MERGE_POLICY="$(jq -r '.merge_policy // "manual"' "$CONFIG")"
 CLEANUP_AFTER_MERGE="$(jq -r '.cleanup_after_merge // false' "$CONFIG")"
+SPEC_MODEL="$(jq -r '.spec_model // empty' "$CONFIG")"
 CODING_MODEL="$(jq -r '.coding_model // empty' "$CONFIG")"
+REVIEW_MODEL="$(jq -r '.review_model // empty' "$CONFIG")"
 
 GRILL_MD="${SKILLS_DIR}/grill/SKILL.md"
 PR_ANALYZE_MD="${SKILLS_DIR}/pr-analyze/SKILL.md"
@@ -131,6 +132,7 @@ render_prompt() { # $1=template $2=dest  占位符来自当前上下文
       -e "s#__GRILL_MD__#${GRILL_MD}#g" \
       -e "s#__PR_ANALYZE_MD__#${PR_ANALYZE_MD}#g" \
       -e "s#__CONTRACT__#${WORK}/contract.md#g" \
+      -e "s#__REVIEW_ROOT__#${REVIEW_ROOT:-${WORK}/review-worktrees}#g" \
       -e "s#__PR__#$(state_last PR)#g" \
       "$1" > "$2"
 }
@@ -156,17 +158,32 @@ run_agent() { # $1=template $2=session $3=cwd $4=log
   local prompt="${WORK}/$(basename "$4" .md)-prompt.md"
   render_prompt "$1" "$prompt"
   local evlog="${4}.events.jsonl"
-  local model_flag=""
-  if [ "$2" = "coding" ] && [ -n "$CODING_MODEL" ]; then model_flag="--model ${CODING_MODEL}"; fi
-  ( cd "$3" && "$AGENT_CLI" --mode json $model_flag --session-id "mm${issue}-$2" "$(cat "$prompt")" ) | tee -a "$evlog" | stream_filter || true
+  local model=""
+  case "$2" in
+    spec) model="$SPEC_MODEL" ;;
+    coding) model="$CODING_MODEL" ;;
+    review) model="$REVIEW_MODEL" ;;
+  esac
+  local -a model_args=()
+  if [ -n "$model" ]; then model_args=(--model "$model"); fi
+  local invocation; invocation="$(mktemp "${WORK}/.agent-events.XXXXXX")"
+  CURRENT_OUTPUT="${WORK}/.agent-current-output.md"
+  : > "$CURRENT_OUTPUT"
+  local agent_status=0
+  ( cd "$3" && "$AGENT_CLI" --mode json ${model_args[@]+"${model_args[@]}"} --session-id "mm${issue}-$2" "$(cat "$prompt")" ) | tee "$invocation" | stream_filter || agent_status=$?
   printf '\n'  # 确保流结束后后续 echo 另起一行
   # 从事件流提取全部助手正文（含末尾输出契约行）写入日志
-  jq -r 'select(.type == "message_end" and .message.role == "assistant") | .message.content[]? | select(.type == "text") | .text, ""' "$evlog" 2>/dev/null >> "$4" || true
+  cat "$invocation" >> "$evlog"
+  jq -r 'select(.type == "message_end" and .message.role == "assistant") | .message.content[]? | select(.type == "text") | .text, ""' "$invocation" > "$CURRENT_OUTPUT"
+  cat "$CURRENT_OUTPUT" >> "$4"
+  rm -f "$invocation"
+  return "$agent_status"
 }
 
 expect_line() { # $1=file $2=pattern
   grep -E "$2" "$1" | tail -1 || true
 }
+final_line() { awk 'NF {line=$0} END {print line}' "$1"; }
 
 # ---------- 阶段 ----------
 PIPELINE_LABELS="pipeline/hold pipeline/manual pipeline/decisions pipeline/ready pipeline/queued pipeline/blocked pipeline/merged"
@@ -189,10 +206,13 @@ ensure_pipeline_label() { # $1=标签名（不存在则建，带中文描述）
 
 set_pipeline_label() { # $1=目标标签（空串=清除）；一个 issue 同时只保留一个 pipeline/*
   local cur l
-  cur="$(gh issue view "$issue" --repo "$REPO" --json labels --jq '[.labels[].name] | map(select(startswith("pipeline/"))) | .[]' 2>/dev/null || true)"
+  cur="$(gh issue view "$issue" --repo "$REPO" --json labels --jq '[.labels[].name] | map(select(startswith("pipeline/"))) | .[]')" || { echo "WARN: 无法读取 issue 标签，未更新状态" >&2; return 1; }
+  if printf '%s\n' "$cur" | grep -qx 'pipeline/manual'; then
+    echo "ERROR: issue 已标记 pipeline/manual，停止更改流水线标签" >&2; return 1
+  fi
   for l in $cur; do
     [ "$l" = "$1" ] && continue
-    gh issue edit "$issue" --repo "$REPO" --remove-label "$l" >/dev/null 2>&1 || true
+    gh issue edit "$issue" --repo "$REPO" --remove-label "$l" >/dev/null 2>&1 || echo "WARN: 无法移除旧标签 ${l}" >&2
   done
   if [ -n "$1" ]; then
     ensure_pipeline_label "$1"
@@ -202,6 +222,33 @@ set_pipeline_label() { # $1=目标标签（空串=清除）；一个 issue 同�
 }
 
 file_hash() { [ -f "$1" ] && shasum "$1" | awk '{print $1}' || echo missing; }
+decision_package_fingerprint() {
+  { file_hash "${WORK}/decision-package.json"; file_hash "${WORK}/decision-package.md"; } | shasum | awk '{print $1}'
+}
+check_answer_package() {
+  local recorded
+  [ -f "${WORK}/decision-package.answers.md" ] || return 0
+  [ -f "${WORK}/.answer-package-hash" ] || return 0 # 旧版手写答复由 Spec 结合历史判断
+  recorded="$(cat "${WORK}/.answer-package-hash")"
+  if [ "$recorded" != "$(decision_package_fingerprint)" ]; then
+    echo "ERROR: 决策包已变化或答复来自旧版，请按当前决策包重新答题" >&2; return 1
+  fi
+}
+contract_fingerprint() {
+  { file_hash "${WORK}/contract.md"; file_hash "${WORK}/decision-package.md"; file_hash "${WORK}/decision-package.json"; file_hash "${WORK}/decision-package.answers.md"; } | shasum | awk '{print $1}'
+}
+require_contract() {
+  if [ ! -s "${WORK}/contract.md" ] || [ "$(state_last CONTRACT_READY)" != "$(contract_fingerprint)" ]; then
+    echo "SPEC_GATE: 契约未就绪或决策已变更，请完成答题并重新运行 spec" >&2; return 1
+  fi
+}
+require_not_manual() {
+  local labels
+  labels="$(gh issue view "$issue" --repo "$REPO" --json labels --jq '.labels[].name')" || { echo "ERROR: 无法读取 issue 标签" >&2; return 1; }
+  if printf '%s\n' "$labels" | grep -qx 'pipeline/manual'; then
+    echo "ERROR: issue #${issue} 标记 pipeline/manual，请先手动移除标签" >&2; return 1
+  fi
+}
 
 # 回写 issue：带 🤖 徽标，幂等（内容哈希变了才重发）；回写失败只警告不中断
 post_issue_trace() { # $1=阶段 $2=正文文件 $3=state键
@@ -220,20 +267,27 @@ post_issue_trace() { # $1=阶段 $2=正文文件 $3=state键
 }
 
 cmd_spec() {
+  check_answer_package || return 1
+  if [ -f "${WORK}/decision-package.answers.md" ] && grep -q '（未答）' "${WORK}/decision-package.answers.md"; then
+    echo "ERROR: 决策包还有未回答的问题，请先完成答题" >&2; return 1
+  fi
   # 护栏：维护者圈地的单（大重构/设计/亲手写）不进流水线；解除方式 = 亲手摘标签
   if gh issue view "$issue" --repo "$REPO" --json labels --jq '.labels[].name' 2>/dev/null | grep -qx 'pipeline/manual'; then
     echo "ERROR: issue #${issue} 已标记 pipeline/manual（维护者自行处理）。如确要进入流水线，请先手动移除该标签。" >&2
     exit 2
   fi
-  run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md"
-  local verdict; verdict="$(expect_line "${LOGS}/spec-output.md" '^SPEC_RESULT:')"
+  state_set "CONTRACT_READY=invalid"
+  local starting_package
+  starting_package="$(decision_package_fingerprint)"
+  run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md" || { echo "ERROR: Spec Agent 失败" >&2; return 1; }
+  local verdict; verdict="$(final_line "$CURRENT_OUTPUT")"
   echo "SPEC => ${verdict:-缺失输出契约}"
   # 全程留痕：每个出口都在 issue 留下对应产物
   # 注意匹配顺序与锚定：NOT_READY 含 READY 子串，必须先判 NOT 分支，READY 用前缀锚定
   case "$verdict" in
-    *DECISIONS_REQUIRED*)
-      [ -f "${WORK}/decision-package.md" ] \
-        && post_issue_trace spec-decisions "${WORK}/decision-package.md" DECISIONS_POSTED
+    "SPEC_RESULT: DECISIONS_REQUIRED"*)
+      [ -s "${WORK}/decision-package.md" ] || { echo "ERROR: 缺少决策包" >&2; return 1; }
+      post_issue_trace spec-decisions "${WORK}/decision-package.md" DECISIONS_POSTED || return 1
       set_pipeline_label pipeline/decisions
       # 人在终端时：出了决策包直接进答题器，答完自动续跑 spec（防止追问死循环，最多链 3 次）
       if [ -t 0 ] && [ "${SPEC_CHAIN:-0}" -lt 3 ]; then
@@ -242,16 +296,22 @@ cmd_spec() {
       else
         echo "下一步： ./run.sh answer ${ISSUE_REF} 逐题拍板（非交互用： ./run.sh answer ${ISSUE_REF} 'Q1=B'）"
       fi ;;
-    *CLOSE_RECOMMENDED*|*NOT_READY*)
+    "SPEC_RESULT: CLOSE_RECOMMENDED="*|"SPEC_RESULT: NOT_READY="*)
       post_issue_trace spec-note "${LOGS}/spec-output.md" SPEC_NOTE_POSTED
       set_pipeline_label pipeline/hold
       echo "spec 建议已回写 issue，等维护者确认" ;;
     "SPEC_RESULT: READY"*)
       # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕
-      [ -f "${WORK}/contract.md" ] \
-        && post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED
+      check_answer_package || return 1
+      if [ -f "${WORK}/decision-package.answers.md" ] && [ "$starting_package" != "$(decision_package_fingerprint)" ]; then
+        echo "ERROR: 生成契约时决策包发生变化，请先核对答复" >&2; return 1
+      fi
+      [ -s "${WORK}/contract.md" ] || { echo "ERROR: 缺少实施契约" >&2; return 1; }
+      post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED || return 1
+      state_set "CONTRACT_READY=$(contract_fingerprint)"
       set_pipeline_label pipeline/ready
       echo "契约已就绪，下一步： ./run.sh loop ${ISSUE_REF}" ;;
+    *) echo "ERROR: Spec Agent 缺失有效结果" >&2; return 1 ;;
   esac
 }
 
@@ -285,6 +345,7 @@ next_round() { # 下一轮 coding = 已打回次数 + 1
 }
 
 cmd_coding() {
+  require_contract || return 1
   local round="${3:-$(next_round)}"
   local template="${SKILL_DIR}/prompts/coding-round1.md"
   if [ "$round" -gt 1 ]; then
@@ -294,48 +355,85 @@ cmd_coding() {
     sed "s#__FEEDBACK__#${fb}#" "$template" > "${WORK}/.coding-fix-tpl.md"
     template="${WORK}/.coding-fix-tpl.md"
   fi
-  run_agent "$template" coding "${WORK}/wt" "${LOGS}/round${round}-coding-output.md"
-  local pr; pr="$(expect_line "${LOGS}/round${round}-coding-output.md" 'PIPELINE_RESULT: PR=' | grep -oE '[0-9]+' || true)"
+  CODING_RESULT=""
+  state_set "VERDICT=MISSING"
+  run_agent "$template" coding "${WORK}/wt" "${LOGS}/round${round}-coding-output.md" || { echo "ERROR: Coding Agent 失败" >&2; return 1; }
+  CODING_RESULT="$(final_line "$CURRENT_OUTPUT")"
+  local pr; pr="$(printf '%s\n' "$CODING_RESULT" | sed -nE 's/^PIPELINE_RESULT: PR=([0-9]+)[[:space:]]*$/\1/p')"
   if [ -n "$pr" ]; then state_set "PR=${pr}"; fi
-  echo "CODING round ${round} => $(expect_line "${LOGS}/round${round}-coding-output.md" '^PIPELINE_RESULT:' || echo 缺失输出契约)"
+  echo "CODING round ${round} => ${CODING_RESULT:-缺失输出契约}"
+  [[ "$CODING_RESULT" =~ ^PIPELINE_RESULT:\ PR=[0-9]+$ || "$CODING_RESULT" = 'PIPELINE_RESULT: PUSHED' ]]
 }
 
 cmd_review() {
+  require_contract || return 1
   local round="${3:-$(current_round)}"
   [ "$round" -gt 0 ] || { echo "ERROR: 没有已完成的 coding 轮次，先跑 coding" >&2; exit 2; }
   local pr; pr="$(state_last PR)"
   [ -n "$pr" ] || { echo "ERROR: state 无 PR 号，先跑 coding" >&2; exit 2; }
-  run_agent "${SKILL_DIR}/prompts/review-agent.md" review "$MAIN_REPO" "${LOGS}/round${round}-review-output.md"
-  local verdict; verdict="$(expect_line "${LOGS}/round${round}-review-output.md" '^PIPELINE_VERDICT:' | grep -oE '(APPROVE|CHANGES_REQUIRED|WAIT)' || true)"
+  state_set "VERDICT=MISSING"
+  local review_head final_head review_contract
+  review_contract="$(contract_fingerprint)"
+  review_head="$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
+  [[ "$review_head" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定 PR head" >&2; return 1; }
+  mkdir -p "${WORK}/review-worktrees"
+  local review_parent
+  review_parent="$(cd "${WORK}/review-worktrees" && pwd -P)"
+  REVIEW_ROOT="$(mktemp -d "${review_parent}/round${round}.XXXXXX")"
+  run_agent "${SKILL_DIR}/prompts/review-agent.md" review "$MAIN_REPO" "${LOGS}/round${round}-review-output.md" || { echo "ERROR: Review Agent 失败" >&2; return 1; }
+  local verdict; verdict="$(final_line "$CURRENT_OUTPUT" | sed -nE 's/^PIPELINE_VERDICT: (APPROVE|CHANGES_REQUIRED|WAIT)[[:space:]]*$/\1/p')"
+  final_head="$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
+  if [ "$review_head" != "$final_head" ]; then
+    verdict=WAIT
+    printf '\n流水线：审查期间 PR head 已变化，原结论作废，需重新审查。\n' >> "$CURRENT_OUTPUT"
+  fi
+  if [ "$review_contract" != "$(contract_fingerprint)" ] || [ "$(state_last CONTRACT_READY)" != "$review_contract" ]; then
+    verdict=WAIT
+    printf '\n流水线：审查期间契约或决策已变化，原结论作废，需重新确认并审查。\n' >> "$CURRENT_OUTPUT"
+  fi
+  state_set "REVIEW_HEAD=${review_head}"
+  state_set "REVIEW_PR=${pr}"
+  state_set "REVIEW_ROUND=${round}"
+  state_set "REVIEW_CONTRACT=${review_contract}"
   state_set "VERDICT=${verdict:-MISSING}"
   case "$verdict" in
-    CHANGES_REQUIRED) cp "${LOGS}/round${round}-review-output.md" "${LOGS}/round${round}-review-feedback.md" ;;
+    CHANGES_REQUIRED) cp "$CURRENT_OUTPUT" "${LOGS}/round${round}-review-feedback.md" ;;
   esac
+  [ -z "$verdict" ] || post_issue_trace "review-round-${round}" "$CURRENT_OUTPUT" "REVIEW_${round}_POSTED" || true
   echo "REVIEW round ${round} => PIPELINE_VERDICT: ${verdict:-缺失输出契约}"
+  [ -n "$verdict" ]
 }
 
 cmd_finish() {
+  require_contract || return 1
   local round="${3:-$(current_round)}"
   [ "$round" -gt 0 ] || { echo "ERROR: 没有已完成的 coding 轮次" >&2; exit 2; }
   local pr; pr="$(state_last PR)"
   [ -n "$pr" ] || { echo "ERROR: state 无 PR 号" >&2; exit 2; }
   local force="${FORCE:-0}"
   local verdict; verdict="$(state_last VERDICT)"
-  # 绿门 = Review Agent 本地验证通过（GitHub 测试工作流已禁用，checks 不构成门）
+  # 使用本次任务授权范围内的审查结果，不假设目标仓库的 CI 状态。
   if [ "$force" != "1" ] && [ "$verdict" != "APPROVE" ]; then
     echo "NOT_APPROVED: 最近审查结论为 ${verdict:-无}；绿门=审查通过（本地验证）。强行合并需 FORCE=1" >&2
     exit 2
   fi
-
-  gh pr merge "$pr" --repo "$REPO" --merge
+  local head reviewed_head
+  head="$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid)" || return 1
+  [[ "$head" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "ERROR: 无法确定 PR head" >&2; return 1; }
+  reviewed_head="$(state_last REVIEW_HEAD)"
+  if [ "$force" != "1" ] && { [ "$head" != "$reviewed_head" ] || [ "$(state_last REVIEW_PR)" != "$pr" ] || [ "$(state_last REVIEW_ROUND)" != "$round" ] || [ "$(state_last REVIEW_CONTRACT)" != "$(contract_fingerprint)" ]; }; then
+    echo "ERROR: 当前 PR、head 或契约与审查结果不一致，请重新审查" >&2; return 1
+  fi
+  require_not_manual || return 1
+  gh pr merge "$pr" --repo "$REPO" --merge --match-head-commit "$head" || return 1
+  state_set "MERGED=${pr}"
   cat > "${WORK}/.merged-comment.md" <<EOF
 🤖 流水线自动生成 · 阶段：merge
 
-PR #${pr} 已通过审查（Review Agent，pr-analyze 协议，第 ${round} 轮）并合并到 ${BASE}。绿门 = Review Agent 在精确 head 上的本地验证（测试/build/lint）。GitHub Actions 测试工作流已于 2026-11-11 由维护者禁用（账单原因），checks 不构成合并门；该运维决策记录于此。实施契约见本 issue 评论区。需要真机/生产复核的验收点请维护者执行后关闭本单。
+PR #${pr} 已合并到 ${BASE}（head ${head}，审查轮次 ${round}，FORCE=${force}）。实际验证范围和结果见审查报告；需要真机/生产复核的验收点请维护者执行后关闭本单。
 EOF
-  gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/.merged-comment.md"
-  set_pipeline_label pipeline/merged
-  state_set "MERGED=${pr}"
+  gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/.merged-comment.md" || echo "WARN: 已合并，但 issue 评论回写失败" >&2
+  set_pipeline_label pipeline/merged || echo "WARN: PR 已合并，但标签未更新" >&2
   echo "MERGED pr=${pr}"
   if [ "$CLEANUP_AFTER_MERGE" = "true" ]; then
     cmd_cleanup
@@ -345,10 +443,8 @@ EOF
 cmd_loop() {
   # 全自动循环：在两个人工关口自动停（决策包未决、合并红门）
   # 铁律：任何停机状态必须在 GitHub 留痕（无人值守时终端不可靠）；回写失败仅警告不中断
-  if [ ! -f "${WORK}/contract.md" ]; then
-    echo "SPEC_GATE: 契约未就绪。先跑 spec 阶段；若已产出 decision-package.md，请收集用户答复写入 decision-package.answers.md 后重跑 spec" >&2
-    exit 3
-  fi
+  require_contract || return 3
+  post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED || { echo "ERROR: 契约未能回写 issue" >&2; return 1; }
   cmd_init
   # 开工留痕：标签 + 评论，让无人值守的观察者知道队列已启动
   set_pipeline_label pipeline/queued
@@ -357,10 +453,17 @@ cmd_loop() {
       | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
       && state_set "LOOP_STARTED=1" || true
   }
-  local round=1 pr verdict
+  local round pr verdict
+  round="$(next_round)"
   while [ "$round" -le "$MAX_ROUNDS" ]; do
     echo "=== ROUND ${round}: coding ==="
-    cmd_coding loop "$issue" "$round"
+    if ! cmd_coding loop "$issue" "$round"; then
+      set_pipeline_label pipeline/blocked
+      printf 'Coding 第 %s 轮未成功，保留现场；详情见本地日志。\n' "$round" > "${WORK}/.blocked.md"
+      post_issue_trace coding-blocked "${WORK}/.blocked.md" CODING_BLOCKED_POSTED || true
+      echo "CODING_BLOCKED: 本次运行未成功，保留现场" >&2
+      exit 3
+    fi
     pr="$(state_last PR)"
     [ -n "$pr" ] || {
       echo "NO_PR: coding 未产出 PR，停机等人工" >&2
@@ -370,7 +473,13 @@ cmd_loop() {
         || echo "WARN: issue 回写失败，日志仅在本地" >&2; }
       exit 3; }
     echo "=== ROUND ${round}: review (PR #${pr}) ==="
-    cmd_review loop "$issue" "$round"
+    if ! cmd_review loop "$issue" "$round"; then
+      set_pipeline_label pipeline/blocked
+      printf 'Review 第 %s 轮未成功，保留现场；详情见本地日志。\n' "$round" > "${WORK}/.blocked.md"
+      post_issue_trace review-blocked "${WORK}/.blocked.md" REVIEW_BLOCKED_POSTED || true
+      echo "REVIEW_BLOCKED: 本次审查未成功，保留现场" >&2
+      exit 4
+    fi
     verdict="$(state_last VERDICT)"
     case "$verdict" in
       APPROVE)
@@ -390,14 +499,11 @@ cmd_loop() {
         echo "MERGE_GATE: 门禁未绿，已挂起；带红合并需用户拍板后 FORCE=1 重跑 finish" >&2
         exit 6 ;;
       CHANGES_REQUIRED)
-        { printf '🤖 流水线自动生成 · 阶段：review\n\n' | cat - "${LOGS}/round${round}-review-feedback.md" \
-          | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
-          || echo "WARN: issue 回写失败，反馈仅在本地 ${LOGS}/round${round}-review-feedback.md" >&2; }
-        echo "round ${round} 打回，反馈已评论 issue，进入 round $((round+1))"
+        echo "round ${round} 打回，反馈保存在本地，进入 round $((round+1))"
         round=$((round+1)) ;;
       *)
         set_pipeline_label pipeline/blocked
-        { printf '🤖 流水线自动生成 · 阶段：review\n\n' | cat - "${LOGS}/round${round}-review-output.md" \
+        { printf '🤖 流水线自动生成 · 阶段：review\n\n' | cat - "$CURRENT_OUTPUT" \
           | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
           || echo "WARN: PR 回写失败，报告仅在本地 ${LOGS}/round${round}-review-output.md" >&2; }
         echo "verdict=${verdict}；停机等人工（报告已回写 PR，标签 pipeline/blocked）" >&2
@@ -412,6 +518,25 @@ cmd_loop() {
   exit 5
 }
 
+remove_owned_worktree() {
+  local target="$1" ignored_list
+  ignored_list="$(mktemp "${WORK}/.ignored-files.XXXXXX")"
+  if ! git -C "$target" ls-files --others --ignored --exclude-standard --directory --no-empty-directory > "$ignored_list"; then
+    echo "WARN: 无法检查被忽略的文件，保留 ${target}" >&2
+    rm -f "$ignored_list"
+    return 0
+  fi
+  if [ -s "$ignored_list" ]; then
+    echo "WARN: 工作区包含被 Git 忽略的文件，保留 ${target}；请核对后自行处理" >&2
+    rm -f "$ignored_list"
+    return 0
+  fi
+  rm -f "$ignored_list"
+  if git -C "$MAIN_REPO" worktree remove "$target"; then
+    echo "REMOVED worktree ${target}"
+  else echo "WARN: 工作区有未保存内容或无法移除，保留 ${target}" >&2; fi
+}
+
 cmd_cleanup() {
   # 清理该 issue 的重量级产物：Coding worktree + Review 的 /tmp 审查工作树
   # 保留轻量证据：logs/、contract.md、decision-package*、state.env
@@ -423,18 +548,24 @@ cmd_cleanup() {
   fi
   local wt="${WORK}/wt"
   if [ -d "$wt" ]; then
-    git -C "$MAIN_REPO" worktree remove "$wt" 2>/dev/null || rm -rf "$wt"
-    echo "REMOVED worktree ${wt}"
+    remove_owned_worktree "$wt"
   fi
   local pr; pr="$(state_last PR)"
   if [ -n "$pr" ]; then
-    local tmpdirs
-    tmpdirs=$(find /tmp -maxdepth 1 -type d -name "pr-analyze-${pr}-*" 2>/dev/null || true)
-    if [ -n "$tmpdirs" ]; then
-      echo "$tmpdirs" | while IFS= read -r d; do rm -rf "$d"; echo "REMOVED $d"; done
+    local d wt_path review_parent
+    if [ -d "${WORK}/review-worktrees" ]; then
+      review_parent="$(cd "${WORK}/review-worktrees" && pwd -P)"
+      while IFS= read -r wt_path; do
+        case "$wt_path" in
+          "$review_parent"/*/*)
+            d="${wt_path%/*}"
+            remove_owned_worktree "$wt_path"
+            [ -d "$wt_path" ] || rmdir "$d" 2>/dev/null || true ;;
+        esac
+      done < <(git -C "$MAIN_REPO" worktree list --porcelain | sed -n 's/^worktree //p')
     fi
   fi
-  rm -f "${WORK}/.coding-fix-tpl.md" "${WORK}/.merged-comment.md"
+  rm -f "${WORK}/.coding-fix-tpl.md"
   echo "KEPT 证据文件：logs/ contract.md decision-package*.md state.env（体积小，可长期保留）"
 }
 
@@ -442,7 +573,8 @@ cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动
   local answers="${WORK}/decision-package.answers.md"
   local pkg_json="${WORK}/decision-package.json"
   [ -f "$pkg_json" ] || { echo "ERROR: 缺少 ${pkg_json}；先跑 spec 出决策包（旧版决策包无 json，可手写 ${answers}，格式 Q1: B）" >&2; exit 2; }
-  : > "$answers"
+  local answers_tmp="${WORK}/.answers-pending"
+  : > "$answers_tmp"
   local inline="${3:-}"
   local ovr="${WORK}/.answer-overrides"; : > "$ovr"
   if [ -n "$inline" ]; then
@@ -451,7 +583,8 @@ cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动
       if [ -n "$q" ] && [ -n "$a" ]; then printf '%s\t%s\n' "$q" "$a" >> "$ovr"; fi
     done
   fi
-  local n id title rec tier ans opt_label auto_lines auto_cnt ask_cnt unanswered
+  local n id title rec tier ans opt_label auto_lines auto_cnt ask_cnt unanswered previous package_hash
+  package_hash="$(decision_package_fingerprint)"
   n="$(jq '.questions | length' "$pkg_json")"
   local i=0; auto_cnt=0; ask_cnt=0; auto_lines=""; ask_ids=""; unanswered=""
   # 第一遍：显式答复 + 【默认过】自动通过（列出一行题面，让你知道过了什么）
@@ -460,10 +593,17 @@ cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动
     tier="$(jq -r --argjson i "$i" '.questions[$i].tier // "ask"' "$pkg_json")"
     rec="$(jq -r --argjson i "$i" '.questions[$i].recommendation // empty' "$pkg_json")"
     local ovr_val; ovr_val="$(awk -F'\t' -v q="$id" '$1==q{print $2; exit}' "$ovr")"
+    previous=""
+    if [ -f "$answers" ] && [ "$(cat "${WORK}/.answer-package-hash" 2>/dev/null || true)" = "$package_hash" ]; then
+      previous="$(awk -v prefix="${id}: " 'index($0,prefix)==1 {print substr($0,length(prefix)+1); exit}' "$answers")"
+      case "$previous" in *'（显式答复）') previous="${previous%（显式答复）}" ;; *) previous="" ;; esac
+    fi
     if [ -n "$ovr_val" ]; then
-      echo "${id}: ${ovr_val}（显式答复）" >> "$answers"
+      echo "${id}: ${ovr_val}（显式答复）" >> "$answers_tmp"
+    elif [ -n "$previous" ]; then
+      echo "${id}: ${previous}（显式答复）" >> "$answers_tmp"
     elif [ "$tier" = "auto" ]; then
-      echo "${id}: ${rec}（默认通过）" >> "$answers"
+      echo "${id}: ${rec}（默认通过）" >> "$answers_tmp"
       title="$(jq -r --argjson i "$i" '.questions[$i].title' "$pkg_json")"
       opt_label="$(jq -r --argjson i "$i" --arg k "$rec" '.questions[$i].options[] | select(.key == $k) | .label' "$pkg_json" 2>/dev/null || true)"
       auto_lines="${auto_lines}  ${id} ${title} → ${rec}）${opt_label}\n"
@@ -490,16 +630,22 @@ cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动
     ans=""
     [ -t 0 ] && read -r ans
     if [ -z "$ans" ]; then
-      if [ -n "$rec" ]; then ans="$rec"; else ans="（未答）"; unanswered="${unanswered} ${id}"; fi
+      if [ -t 0 ] && [ -n "$rec" ]; then ans="$rec"; else ans="（未答）"; unanswered="${unanswered} ${id}"; fi
     fi
-    echo "${id}: ${ans}" >> "$answers"
+    if [ "$ans" = '（未答）' ]; then echo "${id}: ${ans}" >> "$answers_tmp"
+    else echo "${id}: ${ans}（显式答复）" >> "$answers_tmp"; fi
     ask_cnt=$((ask_cnt+1))
   done
+  mv "$answers_tmp" "$answers"
+  printf '%s\n' "$package_hash" > "${WORK}/.answer-package-hash"
   echo
   echo "答复已保存：${answers}（问你 ${ask_cnt} 题，默认过 ${auto_cnt} 题）"
   sed 's/^/  /' "$answers"
-  [ -n "$unanswered" ] && echo "WARN:【问你】档未答复：${unanswered}；spec 仍会停在这些题上" >&2
   rm -f "$ovr"
+  if [ -n "$unanswered" ]; then
+    echo "ERROR:【问你】档未答复：${unanswered}；请补齐后再生成契约" >&2
+    return 2
+  fi
   if [ -t 0 ]; then
     printf '\n现在继续生成实施契约？[Y/n] '
     local go; read -r go
@@ -520,6 +666,10 @@ cmd_status() {
 # ---------- 入口 ----------
 stage="${1:?usage: run.sh [-c config.json] <spec|answer|init|coding|review|finish|loop|cleanup|status> <issue> [round|Q1=B...]}"
 lock
+case "$stage" in
+  spec|answer|init|coding|review|finish|loop)
+    require_not_manual || exit 2 ;;
+esac
 case "$stage" in
   spec)   cmd_spec ;;
   init)   cmd_init ;;

@@ -36,6 +36,8 @@ If these facts are unavailable, preserve the failed lookup or missing source ins
 
 Record the work identity, exact baseline, requested scope, fixed constraints, and implementation authority. Authorization to design is not authorization to implement.
 
+Read the conversation as evidence. Explicit acceptance in the current or an earlier turn applies to the design actually presented, even when expressed as “可以”, “批准”, or “按这个开发”; it does not require a particular keyword, a document status change, or acceptance of details not yet presented. A clear request to implement grants implementation authority for its stated scope. Record both facts separately and preserve them across turns; do not ask again because an agent-authored draft still says `Draft`, because the gate is rerun, or because the user did not use a prescribed phrase.
+
 ### 2. Select the verification depth
 
 - **Full verification:** no inspectable prior verification exists, or the change introduces an uncovered ownership, lifecycle, algorithm, data structure, compatibility, or recovery boundary. Audit all material parts of the design-readiness contract.
@@ -74,15 +76,19 @@ Route unresolved matters precisely:
 - candidate design complete but not explicitly accepted by the maintainer → `AWAITING_ACCEPTANCE`;
 - accepted design covers the exact scope and baseline → `READY`.
 
+Apply these verdicts to material behavior, not to a wish list of implementation details. A missing detail is material when its alternatives change an accepted business outcome, authority, data ownership, lifecycle, compatibility, or a significant failure risk. An ordinary technical choice within accepted behavior is not an acceptance blocker. For example, choose a bounded page size yourself when it does not silently hide results; do not require the user to approve a page size or repeat approval of the design.
+
+When a gap is resolvable within the authorized scope, continue the authorized design, source inspection, or other independent work to resolve it, then reassess the gate in the same workstream. Do not repeatedly end the turn with the same `DESIGN_REQUIRED` or `NEEDS_EVIDENCE` merely because the agent has not yet done that work. Stop before implementation while the verdict is not `READY`; ask the user only when a material business choice, genuinely missing acceptance, or new authorization is actually necessary. Do not manufacture acceptance or mark `READY` while a material gap remains.
+
 ### 5. Issue or verify the receipt
 
 Only `READY` may produce a `VerifiedDesignReceipt`. Use the schema and validity rules in the reference. A receipt records evidence; it does not make weak design true.
 
-For newly introduced architecture, `READY` requires explicit maintainer acceptance of the referenced design. For work wholly inside an already Accepted baseline, record that baseline as the acceptance source.
+For newly introduced architecture, `READY` requires explicit maintainer acceptance of the referenced design, including acceptance already given in conversation after the design was presented. Record the actual acceptance and its scope; an agent-authored status label cannot grant or erase it. For work wholly inside an already Accepted baseline, record that baseline as the acceptance source.
 
 A receipt becomes stale for changed work identity, baseline, scope, design, or material decisions. Reassess the delta and issue a new receipt at the current baseline after `READY`; preserve the old receipt as history. A prior receipt is never silently relabeled as current. Unchanged maintainer acceptance remains usable only for the scope and design it actually covers.
 
-Record implementation authority separately. `READY` may be issued without execution authority; when the user already authorized the exact implementation scope, do not ask for the same permission again. A complete newly introduced design still needs explicit acceptance.
+Record implementation authority separately. `READY` may be issued without execution authority; when the user already authorized the exact implementation scope, do not ask for the same permission again. A complete newly introduced design still needs explicit acceptance, which may already exist in the conversation. Once `READY` and implementation authority are both established, continue into the authorized implementation rather than ending at the receipt.
 
 ## Output
 
