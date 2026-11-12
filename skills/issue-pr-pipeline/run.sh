@@ -32,6 +32,7 @@ if [ ! -f "$CONFIG" ]; then
   exit 1
 fi
 command -v jq >/dev/null || { echo "ERROR: 需要 jq" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "ERROR: 需要 python3（Issue 状态快照）" >&2; exit 1; }
 
 WORK_ROOT="$(jq -r .work_dir "$CONFIG")"
 AGENT_CLI="$(jq -r '.agent_cli // "pi"' "$CONFIG")"
@@ -135,6 +136,7 @@ render_prompt() { # $1=template $2=dest  占位符来自当前上下文
       -e "s#__PR_ANALYZE_MD__#${PR_ANALYZE_MD}#g" \
       -e "s#__CONTRACT__#${WORK}/contract.md#g" \
       -e "s#__REVIEW_ROOT__#${REVIEW_ROOT:-${WORK}/review-worktrees}#g" \
+      -e "s#__SNAPSHOT_META__#${WORK}/.restored-snapshot.json#g" \
       -e "s#__PR__#$(state_last PR)#g" \
       "$1" > "$2"
 }
@@ -188,7 +190,7 @@ expect_line() { # $1=file $2=pattern
 final_line() { awk 'NF {line=$0} END {print line}' "$1"; }
 
 # ---------- 阶段 ----------
-PIPELINE_LABELS="pipeline/hold pipeline/manual pipeline/decisions pipeline/ready pipeline/queued pipeline/blocked pipeline/merged"
+PIPELINE_LABELS="pipeline/hold pipeline/manual pipeline/decisions pipeline/ready pipeline/in-progress pipeline/blocked pipeline/merged"
 
 ensure_pipeline_label() { # $1=标签名（不存在则建，带中文描述）
   gh label view "$1" --repo "$REPO" >/dev/null 2>&1 && return 0
@@ -198,7 +200,7 @@ ensure_pipeline_label() { # $1=标签名（不存在则建，带中文描述）
     pipeline/manual) desc="流水线：维护者自行处理，不进入自动交付"; color=6f42c1 ;;
     pipeline/decisions) desc="流水线：待拍板，决策包见评论"; color=d93f0b ;;
     pipeline/ready) desc="流水线：契约就绪，待启动开发（./run.sh loop）"; color=00b8d9 ;;
-    pipeline/queued) desc="流水线：开发队列进行中"; color=1d76db ;;
+    pipeline/in-progress) desc="流水线：自动交付进行中，包括开发和审查"; color=1d76db ;;
     pipeline/blocked) desc="流水线：中途受阻，需人工解锁，现场快照见评论"; color=b60205 ;;
     pipeline/merged) desc="流水线：已合并，待维护者验收后关单"; color=0e8a16 ;;
     *) return 0 ;;
@@ -244,6 +246,18 @@ require_contract() {
     echo "SPEC_GATE: 契约未就绪或决策已变更，请完成答题并重新运行 spec" >&2; return 1
   fi
 }
+publish_snapshot() {
+  python3 "${SKILL_DIR}/snapshots.py" publish --work "$WORK" --repo "$REPO" --issue "$issue" --stage "$1" --base "$BASE" --repo-path "$MAIN_REPO" \
+    || echo "WARN: Issue 快照回写失败，状态仍保留在本地；跨机器接续前请运行 ./run.sh snapshot ${ISSUE_REF} 补发" >&2
+}
+restore_snapshot() {
+  python3 "${SKILL_DIR}/snapshots.py" restore --work "$WORK" --repo "$REPO" --issue "$issue"
+}
+restore_if_missing() {
+  if [ ! -s "$STATE" ] || [ ! -s "${WORK}/contract.md" ]; then
+    restore_snapshot || echo "WARN: 未能从 Issue 恢复快照" >&2
+  fi
+}
 require_not_manual() {
   local labels
   labels="$(gh issue view "$issue" --repo "$REPO" --json labels --jq '.labels[].name')" || { echo "ERROR: 无法读取 issue 标签" >&2; return 1; }
@@ -279,6 +293,12 @@ cmd_spec() {
     exit 2
   fi
   state_set "CONTRACT_READY=invalid"
+  if [ -f "${WORK}/.restored-snapshot.json" ]; then
+    local meta_tmp
+    meta_tmp="$(mktemp "${WORK}/.snapshot-meta.XXXXXX")"
+    jq 'del(.spec_base_oid)' "${WORK}/.restored-snapshot.json" > "$meta_tmp" && mv "$meta_tmp" "${WORK}/.restored-snapshot.json"
+  fi
+  publish_snapshot spec-start
   local starting_package
   starting_package="$(decision_package_fingerprint)"
   run_agent "${SKILL_DIR}/prompts/spec-agent.md" spec "$MAIN_REPO" "${LOGS}/spec-output.md" || { echo "ERROR: Spec Agent 失败" >&2; return 1; }
@@ -291,6 +311,7 @@ cmd_spec() {
       [ -s "${WORK}/decision-package.md" ] || { echo "ERROR: 缺少决策包" >&2; return 1; }
       post_issue_trace spec-decisions "${WORK}/decision-package.md" DECISIONS_POSTED || return 1
       set_pipeline_label pipeline/decisions
+      publish_snapshot spec-decisions
       # 人在终端时：出了决策包直接进答题器，答完自动续跑 spec（防止追问死循环，最多链 3 次）
       if [ -t 0 ] && [ "${SPEC_CHAIN:-0}" -lt 3 ]; then
         export SPEC_CHAIN=$(( ${SPEC_CHAIN:-0} + 1 ))
@@ -301,6 +322,7 @@ cmd_spec() {
     "SPEC_RESULT: CLOSE_RECOMMENDED="*|"SPEC_RESULT: NOT_READY="*)
       post_issue_trace spec-note "${LOGS}/spec-output.md" SPEC_NOTE_POSTED
       set_pipeline_label pipeline/hold
+      publish_snapshot spec-hold
       echo "spec 建议已回写 issue，等维护者确认" ;;
     "SPEC_RESULT: READY"*)
       # 契约回写 issue：作为 Coding/Review 的验收基线与审计留痕
@@ -312,6 +334,7 @@ cmd_spec() {
       post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED || return 1
       state_set "CONTRACT_READY=$(contract_fingerprint)"
       set_pipeline_label pipeline/ready
+      publish_snapshot spec-ready
       echo "契约已就绪，下一步： ./run.sh loop ${ISSUE_REF}" ;;
     *) echo "ERROR: Spec Agent 缺失有效结果" >&2; return 1 ;;
   esac
@@ -321,7 +344,16 @@ cmd_init() {
   git -C "$MAIN_REPO" fetch --no-tags origin "$BASE"
   local wt="${WORK}/wt"
   if [ ! -d "$wt" ]; then
-    git -C "$MAIN_REPO" worktree add "$wt" -b "$BRANCH" "origin/${BASE}"
+    local remote_branch
+    remote_branch="$(git -C "$MAIN_REPO" ls-remote --heads origin "refs/heads/${BRANCH}")" || return 1
+    if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+      git -C "$MAIN_REPO" worktree add "$wt" "$BRANCH"
+    elif [ -n "$remote_branch" ]; then
+      git -C "$MAIN_REPO" fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+      git -C "$MAIN_REPO" worktree add "$wt" -b "$BRANCH" "origin/${BRANCH}"
+    else
+      git -C "$MAIN_REPO" worktree add "$wt" -b "$BRANCH" "origin/${BASE}"
+    fi
     echo "CREATED worktree=${wt} branch=${BRANCH}"
   else
     echo "EXISTS worktree=${wt}"
@@ -368,6 +400,9 @@ cmd_coding() {
     git -C "$MAIN_REPO" fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" || { echo "ERROR: 获取远端工作分支失败" >&2; return 1; }
     CODING_REMOTE_BRANCH="$(git -C "$MAIN_REPO" rev-parse "refs/remotes/origin/${BRANCH}")" || return 1
   fi
+  state_set "CODING_START_BASE=${CODING_BASE}"
+  state_set "CODING_START_REMOTE=${CODING_REMOTE_BRANCH}"
+  publish_snapshot "coding-round-${round}-start"
   run_agent "$template" coding "${WORK}/wt" "${LOGS}/round${round}-coding-output.md" || { echo "ERROR: Coding Agent 失败" >&2; return 1; }
   CODING_RESULT="$(final_line "$CURRENT_OUTPUT")"
   local pr; pr="$(printf '%s\n' "$CODING_RESULT" | sed -nE 's/^PIPELINE_RESULT: PR=([0-9]+)[[:space:]]*$/\1/p')"
@@ -423,6 +458,9 @@ cmd_review() {
     echo "主分支在 Coding 后更新，需要同步并重新验证" >&2
     return 0
   fi
+  state_set "REVIEW_START_HEAD=${review_head}"
+  state_set "REVIEW_START_BASE=${review_base}"
+  publish_snapshot "review-round-${round}-start"
   mkdir -p "${WORK}/review-worktrees"
   local review_parent
   review_parent="$(cd "${WORK}/review-worktrees" && pwd -P)"
@@ -506,6 +544,7 @@ PR #${pr} 已合并到 ${BASE}（head ${head}，审查轮次 ${round}，FORCE=${
 EOF
   gh issue comment "$issue" --repo "$REPO" --body-file "${WORK}/.merged-comment.md" || echo "WARN: 已合并，但 issue 评论回写失败" >&2
   set_pipeline_label pipeline/merged || echo "WARN: PR 已合并，但标签未更新" >&2
+  publish_snapshot merged
   echo "MERGED pr=${pr}"
   if [ "$CLEANUP_AFTER_MERGE" = "true" ]; then
     cmd_cleanup
@@ -518,18 +557,28 @@ cmd_loop() {
   require_contract || return 3
   post_issue_trace spec-contract "${WORK}/contract.md" CONTRACT_POSTED || { echo "ERROR: 契约未能回写 issue" >&2; return 1; }
   cmd_init
+  if [ -s "${WORK}/.restored-snapshot.json" ]; then
+    local historical_base current_base
+    historical_base="$(jq -r '.spec_base_oid // .source_checkout_head // empty' "${WORK}/.restored-snapshot.json")"
+    current_base="$(git -C "$MAIN_REPO" rev-parse "refs/remotes/origin/${BASE}")" || return 1
+    if [ -n "$historical_base" ]; then
+      echo "历史快照代码基线 ${historical_base}；当前 ${BASE} ${current_base}。Coding/Review 将结合当前代码核对契约。"
+    fi
+  fi
   # 开工留痕：标签 + 评论，让无人值守的观察者知道队列已启动
-  set_pipeline_label pipeline/queued
+  set_pipeline_label pipeline/in-progress
   [ "$(state_last LOOP_STARTED)" != "1" ] && {
     printf '🤖 流水线自动生成 · 阶段：coding\n\n开始自动交付（目标 %s，最多 %s 轮，合并策略 %s）。后续每轮审查结论与合并结果都会回写本 issue。\n' "$BASE" "$MAX_ROUNDS" "$MERGE_POLICY" \
       | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
       && state_set "LOOP_STARTED=1" || true
   }
+  publish_snapshot loop-start
   local round pr verdict sync_attempts=0 finish_status coding_status
   round="$(next_round)"
   while [ "$round" -le "$MAX_ROUNDS" ]; do
     echo "=== ROUND ${round}: coding ==="
     if cmd_coding loop "$issue" "$round"; then coding_status=0; else coding_status=$?; fi
+    publish_snapshot "coding-round-${round}"
     if [ "$coding_status" != 0 ]; then
       if [ "$coding_status" = 8 ]; then
         sync_attempts=$((sync_attempts+1))
@@ -541,6 +590,7 @@ cmd_loop() {
       set_pipeline_label pipeline/blocked
       printf 'Coding 第 %s 轮未成功，保留现场；详情见本地日志。\n' "$round" > "${WORK}/.blocked.md"
       post_issue_trace coding-blocked "${WORK}/.blocked.md" CODING_BLOCKED_POSTED || true
+      publish_snapshot coding-blocked
       echo "CODING_BLOCKED: 本次运行未成功，保留现场" >&2
       exit 3
     fi
@@ -551,15 +601,19 @@ cmd_loop() {
       { printf '🤖 流水线自动生成 · 阶段：coding\n\n第 %s 轮 Coding Agent 未产出 PR（BLOCKED 或输出契约缺失），已停机等人工。本地日志：issue-%s/logs/round%s-coding-output.md\n' "$round" "$issue" "$round" \
         | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
         || echo "WARN: issue 回写失败，日志仅在本地" >&2; }
+      publish_snapshot coding-blocked
       exit 3; }
     echo "=== ROUND ${round}: review (PR #${pr}) ==="
     if ! cmd_review loop "$issue" "$round"; then
+      publish_snapshot "review-round-${round}-failed"
       set_pipeline_label pipeline/blocked
       printf 'Review 第 %s 轮未成功，保留现场；详情见本地日志。\n' "$round" > "${WORK}/.blocked.md"
       post_issue_trace review-blocked "${WORK}/.blocked.md" REVIEW_BLOCKED_POSTED || true
+      publish_snapshot review-blocked
       echo "REVIEW_BLOCKED: 本次审查未成功，保留现场" >&2
       exit 4
     fi
+    publish_snapshot "review-round-${round}"
     verdict="$(state_last VERDICT)"
     case "$verdict" in
       APPROVE)
@@ -581,6 +635,7 @@ cmd_loop() {
           set_pipeline_label pipeline/blocked
           printf '主分支或 PR 反复变化，达到 %s 次同步尝试上限；保留现场。\n' "$MAX_ROUNDS" > "${WORK}/.blocked.md"
           post_issue_trace sync-blocked "${WORK}/.blocked.md" SYNC_BLOCKED_POSTED || true
+          publish_snapshot sync-blocked
           echo "主分支或 PR 反复变化，达到重试上限；保留现场" >&2
           exit 5
         fi
@@ -599,6 +654,7 @@ cmd_loop() {
           set_pipeline_label pipeline/blocked
           printf '主分支或 PR 反复变化，达到 %s 次同步尝试上限；保留现场。\n' "$MAX_ROUNDS" > "${WORK}/.blocked.md"
           post_issue_trace sync-blocked "${WORK}/.blocked.md" SYNC_BLOCKED_POSTED || true
+          publish_snapshot sync-blocked
           echo "主分支或 PR 反复变化，达到重试上限；保留现场" >&2
           exit 5
         fi
@@ -609,6 +665,7 @@ cmd_loop() {
           | gh pr comment "$pr" --repo "$REPO" --body-file - 2>/dev/null \
           || echo "WARN: PR 回写失败，报告仅在本地 ${LOGS}/round${round}-review-output.md" >&2; }
         echo "verdict=${verdict}；停机等人工（报告已回写 PR，标签 pipeline/blocked）" >&2
+        publish_snapshot review-blocked
         exit 4 ;;
     esac
   done
@@ -616,6 +673,7 @@ cmd_loop() {
   { printf '🤖 流水线自动生成 · 阶段：review\n\n%s 轮内未获 APPROVE，按安全阀停机等人工；各轮反馈见本 issue 评论区与本地 logs。\n' "$MAX_ROUNDS" \
     | gh issue comment "$issue" --repo "$REPO" --body-file - 2>/dev/null \
     || echo "WARN: issue 回写失败" >&2; }
+  publish_snapshot max-rounds-blocked
   echo "MAX_ROUNDS(${MAX_ROUNDS}) 未通过；停机等人工" >&2
   exit 5
 }
@@ -740,6 +798,7 @@ cmd_answer() { # 交互答题：【问你】逐题拍板，【默认过】自动
   done
   mv "$answers_tmp" "$answers"
   printf '%s\n' "$package_hash" > "${WORK}/.answer-package-hash"
+  publish_snapshot answers
   echo
   echo "答复已保存：${answers}（问你 ${ask_cnt} 题，默认过 ${auto_cnt} 题）"
   sed 's/^/  /' "$answers"
@@ -765,22 +824,49 @@ cmd_status() {
   done
 }
 
+cmd_check() {
+  require_contract || return 1
+  echo "契约与状态指纹一致：${ISSUE_REF}"
+  if [ -s "${WORK}/.restored-snapshot.json" ]; then
+    jq -r '"快照阶段：\(.stage)；历史 Spec 基线：\(.spec_base_oid // "未记录")；原工作区未提交状态：\(if .untransferred_source_status then "历史工作区有未转移内容" elif .coding_status == null then "未记录" elif .coding_status == "" then "干净" else "有未提交或未跟踪内容（快照未携带文件本体）" end)"' "${WORK}/.restored-snapshot.json"
+  fi
+  local live_base
+  live_base="$(git -C "$MAIN_REPO" ls-remote --heads origin "refs/heads/${BASE}")" || return 1
+  [ -n "$live_base" ] || { echo "ERROR: 无法获取当前目标分支" >&2; return 1; }
+  echo "当前远端目标分支：${live_base}"
+  if [ -s "${WORK}/.restored-snapshot.json" ]; then
+    local historical_base current_oid
+    historical_base="$(jq -r '.spec_base_oid // .source_checkout_head // empty' "${WORK}/.restored-snapshot.json")"
+    current_oid="${live_base%%[[:space:]]*}"
+    if [ -n "$historical_base" ]; then
+      if [ "$historical_base" = "$current_oid" ]; then echo "代码基线：与历史快照一致"
+      else echo "代码基线：已从 ${historical_base} 变化到 ${current_oid}，后续 Coding/Review 应核对影响"; fi
+    fi
+  fi
+}
+
 # ---------- 入口 ----------
-stage="${1:?usage: run.sh [-c config.json] <spec|answer|init|coding|review|finish|loop|cleanup|status> <issue> [round|Q1=B...]}"
+stage="${1:?usage: run.sh [-c config.json] <spec|answer|init|coding|review|finish|loop|cleanup|status|snapshot|restore|check> <issue>}"
 lock
 case "$stage" in
-  spec|answer|init|coding|review|finish|loop)
+  spec|answer|init|coding|review|finish|loop|restore|check)
     require_not_manual || exit 2 ;;
+esac
+case "$stage" in
+  init|coding|review|finish|loop|check) restore_if_missing ;;
 esac
 case "$stage" in
   spec)   cmd_spec ;;
   init)   cmd_init ;;
-  coding) cmd_coding "$@" ;;
-  review) cmd_review "$@" ;;
-  finish) cmd_finish "$@" ;;
+  coding) if cmd_coding "$@"; then rc=0; else rc=$?; fi; publish_snapshot coding-manual; exit "$rc" ;;
+  review) if cmd_review "$@"; then rc=0; else rc=$?; fi; publish_snapshot review-manual; exit "$rc" ;;
+  finish) if cmd_finish "$@"; then rc=0; else rc=$?; publish_snapshot finish-blocked; fi; exit "$rc" ;;
   loop)   cmd_loop ;;
   answer) cmd_answer "$@" ;;
   cleanup) cmd_cleanup ;;
   status) cmd_status ;;
-  *) echo "usage: run.sh [-c config.json] <spec|init|coding|review|finish|loop|cleanup|status> <issue> [round]"; exit 1 ;;
+  snapshot) python3 "${SKILL_DIR}/snapshots.py" publish --work "$WORK" --repo "$REPO" --issue "$issue" --stage manual --base "$BASE" --repo-path "$MAIN_REPO" ;;
+  restore) restore_snapshot ;;
+  check) cmd_check ;;
+  *) echo "usage: run.sh [-c config.json] <spec|answer|init|coding|review|finish|loop|cleanup|status|snapshot|restore|check> <issue>"; exit 1 ;;
 esac

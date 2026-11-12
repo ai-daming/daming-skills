@@ -25,7 +25,7 @@ git clone https://github.com/ai-daming/daming-skills.git
 ln -s $(pwd)/daming-skills/skills/issue-pr-pipeline ~/.pi/agent/skills/issue-pr-pipeline  # 或复制
 ```
 
-前置：`pi`（headless agent CLI）、`gh`（已登录）、`jq`；同仓库需有兄弟 skill `grill/` 与 `pr-analyze/`（软链整个 daming-skills 即可），`pr-analyze` 需配好 `config.json` 的 `report_dir`。
+前置：`pi`（headless agent CLI）、`gh`（已登录）、`jq`、`python3`；同仓库需有兄弟 skill `grill/` 与 `pr-analyze/`（软链整个 daming-skills 即可），`pr-analyze` 需配好 `config.json` 的 `report_dir`。
 
 首次配置：复制 `config.example.json` 为 `config.json`：
 
@@ -73,13 +73,15 @@ cd <skill 目录>
 
 决策包、契约、开工、审查和停机尽量回写 GitHub，评论带 `🤖 流水线自动生成` 徽标；回写失败会提示。决策包或契约回写失败时不进入下一阶段。issue 上的 `pipeline/*` 标签反映流水线状态：
 
+关键阶段会追加原始 `state.env` 和代码基线快照；契约、决策和必要返工反馈引用已有评论，相同内容只存一次。另一台机器缺少本地状态或契约时，运行 `loop`、`check` 等命令会从最新快照恢复；引用的评论或内容发生变化、快照分片不完整时停止恢复，已有不同内容的本地文件不会被覆盖。可运行 `./run.sh check owner/repo#123` 检查契约和当前远端代码基线；若回写失败，在原机器运行 `./run.sh snapshot owner/repo#123` 补发后再切换机器。快照不包含工作树中未提交的源码、完整 agent 会话或运行环境，这些需另行处理；已有远端工作分支会被复用。
+
 | 标签 | 含义 |
 |---|---|
 | `pipeline/hold` | 不适用（要真机/业务没定），原因见评论，条件变了会毕业 |
 | `pipeline/manual` | 维护者保留地，机器一律跳过（人打人摘） |
 | `pipeline/decisions` | 待拍板，决策包见评论 |
 | `pipeline/ready` | 契约就绪，待启动开发（./run.sh loop） |
-| `pipeline/queued` | 开发队列进行中 |
+| `pipeline/in-progress` | 自动交付进行中，包括开发和审查 |
 | `pipeline/blocked` | 中途受阻，等你解锁，现场快照见评论 |
 | `pipeline/merged` | 已合并，差你验收后关单 |
 

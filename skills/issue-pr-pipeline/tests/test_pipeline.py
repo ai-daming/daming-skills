@@ -4,10 +4,14 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+import importlib.util
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "run.sh"
 SHA = "a" * 40
+snapshot_spec = importlib.util.spec_from_file_location("pipeline_snapshots_integration", SCRIPT.parent / "snapshots.py")
+snapshots = importlib.util.module_from_spec(snapshot_spec)
+snapshot_spec.loader.exec_module(snapshots)
 
 
 class PipelineTest(unittest.TestCase):
@@ -27,6 +31,7 @@ class PipelineTest(unittest.TestCase):
         self.gh = self.bin / "gh"
         self.gh.write_text('''#!/bin/bash
 echo "$*" >> "$CALLS"
+if [[ "$1" == "api" ]] && [ -n "${SNAPSHOT_FILE:-}" ]; then cat "$SNAPSHOT_FILE"; exit 0; fi
 if [[ "$*" == *"issue view"* ]]; then printf '%s\\n' "${LABELS:-}"; exit 0; fi
 if [[ "$*" == *"pr view"* ]]; then
   if [[ "$*" == *"baseRefName"* ]]; then printf '%s\\n' "${BASE_NAME:-dev}"
@@ -558,10 +563,60 @@ elif [[ "$*" == *"pr view"* ]]; then echo "$HEAD_SHA"; fi
         subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", str(remote)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "push", "-q", "origin", "HEAD:dev"], check=True)
         self.prepare_contract()
-        result = self.run_pipeline("loop", "owner/repo#1", AGENT_FLOW="1", REMOTE_GIT=str(remote), HEAD_FROM=str(self.issue / "wt"))
+        result = self.run_pipeline("loop", "owner/repo#1", AGENT_FLOW="1", REMOTE_GIT=str(remote), HEAD_FROM=str(self.issue / "wt"), LABELS="pipeline/queued")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("--remove-label pipeline/queued", self.calls.read_text())
+        self.assertIn("--add-label pipeline/in-progress", self.calls.read_text())
         self.assertIn("--match-head-commit ", self.calls.read_text())
         self.assertIn("MERGED=42", (self.issue / "state.env").read_text())
+
+    def test_loop_restores_contract_and_state_from_issue_snapshot(self):
+        self.initialize_repo()
+        remote = self.root / "remote.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(self.repo), str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "push", "-q", "origin", "HEAD:dev"], check=True)
+        self.prepare_contract()
+        original = (self.issue / "contract.md").read_bytes()
+        payload = snapshots.payload_for(self.issue, "owner/repo", 1, "spec-ready", "dev", self.repo, "a" * 40)
+        _, bodies = snapshots.encode_parts(payload)
+        api = self.root / "comments.json"
+        api.write_text(json.dumps([[{"body": body} for body in bodies]]))
+        (self.issue / "contract.md").unlink()
+        (self.issue / "state.env").unlink()
+        result = self.run_pipeline("loop", "owner/repo#1", AGENT_FLOW="1", REMOTE_GIT=str(remote),
+                                   HEAD_FROM=str(self.issue / "wt"), SNAPSHOT_FILE=str(api))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("已从 Issue #1 恢复快照", result.stdout)
+        self.assertEqual((self.issue / "contract.md").read_bytes(), original)
+        self.assertIn("MERGED=42", (self.issue / "state.env").read_text())
+
+    def test_restored_loop_reuses_existing_remote_work_branch(self):
+        self.initialize_repo()
+        remote = self.root / "remote.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(self.repo), str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "push", "-q", "origin", "HEAD:dev"], check=True)
+        other = self.root / "other-host"
+        subprocess.run(["git", "clone", "-q", "--branch", "dev", str(remote), str(other)], check=True)
+        subprocess.run(["git", "-C", str(other), "switch", "-q", "-c", "agent/issue-1"], check=True)
+        subprocess.run(["git", "-C", str(other), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "existing work"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "HEAD:agent/issue-1"], check=True)
+        previous_head = subprocess.check_output(["git", "-C", str(other), "rev-parse", "HEAD"], text=True).strip()
+        self.prepare_contract()
+        with (self.issue / "state.env").open("a") as state:
+            state.write("PR=42\n")
+        payload = snapshots.payload_for(self.issue, "owner/repo", 1, "coding-complete", "dev", self.repo, None)
+        _, bodies = snapshots.encode_parts(payload)
+        api = self.root / "comments.json"
+        api.write_text(json.dumps([[{"body": body} for body in bodies]]))
+        (self.issue / "contract.md").unlink()
+        (self.issue / "state.env").unlink()
+        wt = self.issue / "wt"
+        result = self.run_pipeline("loop", "owner/repo#1", AGENT_FLOW="1", REMOTE_GIT=str(remote),
+                                   HEAD_FROM=str(wt), SNAPSHOT_FILE=str(api))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", previous_head, "HEAD"], check=True)
 
     def test_cleanup_unregisters_review_worktree(self):
         self.initialize_repo()
